@@ -837,3 +837,85 @@ test("WS4 report: per user/team/module/month attribution + labeled impact ranges
   });
   assert.equal(badMonth.statusCode, 400);
 });
+
+// ---------- sprint 4 (WS5: dashboard + potential + statement) ----------
+
+test("WS5 potential math: multiplicative composition, ordered ranges", async () => {
+  const { savingsPotential, TECHNIQUE_BENCHMARKS } = await import(
+    "../src/meter/potential.js"
+  );
+  const p = savingsPotential(1000);
+  assert.ok(p.combined_low_pct > 0 && p.combined_high_pct < 1);
+  assert.ok(p.combined_low_pct < p.combined_high_pct);
+  // multiplicative, not summed: combined < sum of parts (high end)
+  const naiveSum = TECHNIQUE_BENCHMARKS.reduce((s, t) => s + t.high, 0);
+  assert.ok(p.combined_high_pct < naiveSum);
+  assert.ok(Math.abs(p.potential_low_usd - 1000 * p.combined_low_pct) < 1e-9);
+  assert.equal(p.confidence, "Benchmarked");
+  assert.ok(p.methodology_note.includes("not guarantees"));
+});
+
+test("WS5 dashboard/potential/statement render with brand + compliance rules", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "dash" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  // 4 seats -> over free cap (m4 banner + watermark must render)
+  const seats: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const { seat_id } = (
+      await app.inject({
+        method: "POST", url: "/v1/seats",
+        headers: { ...ADMIN, ...th },
+        payload: { identity_type: "human", user_id: `sso|d${i}`, team_id: i % 2 ? "eng" : "data" },
+      })
+    ).json() as { seat_id: string };
+    seats.push(seat_id);
+    const r = await app.inject({
+      method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+      payload: validEvent(seat_id, {
+        user_id: `sso|d${i}`,
+        team_id: i % 2 ? "eng" : "data",
+        ts: "2026-07-05T10:00:00Z",
+        model_used: "claude-haiku-4-5-20251001",
+        model_requested: "claude-haiku-4-5-20251001",
+      }),
+    });
+    assert.equal(r.statusCode, 201);
+  }
+
+  // auth: no token -> 401
+  const noAuth = await app.inject({ method: "GET", url: `/dashboard?tenant=${t.tenant_id}` });
+  assert.equal(noAuth.statusCode, 401);
+
+  const q = `?tenant=${t.tenant_id}&token=dev-seat-token`;
+  const dash = await app.inject({ method: "GET", url: `/dashboard${q}` });
+  assert.equal(dash.statusCode, 200);
+  const html = dash.body;
+  assert.ok(html.includes("Observed spend"));
+  assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
+  assert.ok(html.includes("never netted into savings")); // AD12 external line
+  assert.ok(html.includes("kWh")); // energy range
+  assert.ok(html.includes("CO2e")); // carbon range
+  assert.ok(html.includes("Estimated")); // confidence label
+  assert.ok(html.includes("By user") && html.includes("By team") && html.includes("By month"));
+  assert.ok(html.includes("IBM Plex Mono")); // figures in mono (brand)
+  assert.ok(html.includes("#009BE8") && html.includes("#0E8E4E")); // brand tokens present
+
+  const pot = await app.inject({ method: "GET", url: `/dashboard/potential${q}` });
+  assert.equal(pot.statusCode, 200);
+  assert.ok(pot.body.includes("Savings potential"));
+  assert.ok(pot.body.includes("Benchmarked"));
+  assert.ok(pot.body.includes("Generated over the free-tier seat limit")); // m4 watermark
+  assert.ok(pot.body.includes("30-40%")); // typical realized range note
+
+  const st = await app.inject({ method: "GET", url: `/dashboard/statement${q}&month=2026-07` });
+  assert.equal(st.statusCode, 200);
+  assert.ok(st.body.includes("Statement - 2026-07"));
+  assert.ok(st.body.includes("$0")); // Observe fee line
+  assert.ok(st.body.includes("reported separately")); // AD12
+  const badMonth = await app.inject({
+    method: "GET", url: `/dashboard/statement${q}&month=nope`,
+  });
+  assert.equal(badMonth.statusCode, 400);
+});

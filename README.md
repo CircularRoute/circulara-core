@@ -1,10 +1,13 @@
 # circulara-core
 
-Circulara Observe tier: per-tenant backend + MCP plugin. Sprints 1-3: WS0 (scaffold),
+Circulara Observe tier: per-tenant backend + MCP plugin. Sprints 1-4: WS0 (scaffold),
 WS6 (pricing registry), WS1 (MCP plugin), WS2 (auth + BYO keys + gateway), WS3
 (telemetry pipeline: normalize -> re-price -> append; free-tier cap; OpenAI-format
 gateway for Cursor-class hosts), WS4 (meter compute: registry pricing, energy/CO2e
-ranges with confidence labels, per user/team/module/month report).
+ranges with confidence labels, per user/team/module/month report), WS5 (Observe
+dashboard + savings-potential report + monthly statement, server-rendered, Ledger
+Light brand tokens; seed a demo tenant with packages/backend/scripts/seed-demo.ts
+and open the printed /dashboard URL).
 Architecture: /outputs/reports/architecture_v1.md (AD1-AD6, rev 2026-07-07) + the
 sourcing addendum (AD7-AD12).
 

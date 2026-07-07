@@ -15,6 +15,12 @@ import {
 } from "../auth/auth.js";
 import { meterSummary } from "../meter/meter.js";
 import { meterReport } from "../meter/report.js";
+import { savingsPotential } from "../meter/potential.js";
+import {
+  renderDashboard,
+  renderPotential,
+  renderStatement,
+} from "../dashboard/render.js";
 import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
 import { setProviderKey, listProviders, type Provider } from "../keys/providerKeys.js";
@@ -166,6 +172,55 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (month && !/^\d{4}-\d{2}$/.test(month))
       throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
     return meterReport(ctx, month);
+  });
+
+  // ---- WS5: Observe dashboard (server-rendered, Ledger Light) ----
+  // Auth: bearer header OR ?token= (dev convenience; a browser session flow
+  // replaces the query token before public launch - flagged in launch prep).
+  const dashAuth = async (req: FastifyRequest) => {
+    const q = req.query as { token?: string; tenant?: string; month?: string };
+    const authz = req.headers.authorization ?? (q.token ? `Bearer ${q.token}` : undefined);
+    const res = await deps.auth.verify(authz);
+    if (!res.ok)
+      throw Object.assign(new Error("unauthorized"), { statusCode: 401 });
+    const tenantId = q.tenant ?? (req.headers["x-tenant-id"] as string | undefined);
+    if (!tenantId)
+      throw Object.assign(new Error("tenant required (?tenant=)"), { statusCode: 400 });
+    try {
+      return { ctx: await deps.control.contextFor(tenantId), q, tenantId };
+    } catch {
+      throw Object.assign(new Error("unknown tenant"), { statusCode: 404 });
+    }
+  };
+  const tenantQ = (tenantId: string, q: { token?: string }, month?: string) =>
+    `?tenant=${tenantId}${q.token ? `&token=${q.token}` : ""}${month ? `&month=${month}` : ""}`;
+
+  app.get("/dashboard", async (req, reply) => {
+    const { ctx, q, tenantId } = await dashAuth(req);
+    const r = await meterReport(ctx, q.month);
+    return reply.type("text/html").send(renderDashboard(r, tenantQ(tenantId, q, q.month)));
+  });
+
+  app.get("/dashboard/potential", async (req, reply) => {
+    const { ctx, q, tenantId } = await dashAuth(req);
+    const r = await meterReport(ctx, q.month);
+    const p = savingsPotential(r.observed_usd);
+    return reply
+      .type("text/html")
+      .send(renderPotential(r, p, tenantQ(tenantId, q, q.month)));
+  });
+
+  app.get("/dashboard/statement", async (req, reply) => {
+    const { ctx, q, tenantId } = await dashAuth(req);
+    // default: current month
+    const month = q.month ?? new Date().toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month))
+      throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
+    const r = await meterReport(ctx, month);
+    const p = savingsPotential(r.observed_usd);
+    return reply
+      .type("text/html")
+      .send(renderStatement(r, p, tenantQ(tenantId, q, month), month));
   });
 
   // ---- gateway metering mode (AD3 path B). Auth = per-seat credential. ----
