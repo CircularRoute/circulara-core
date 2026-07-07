@@ -13,7 +13,7 @@ import {
   type SeatInput,
   type Role,
 } from "../auth/auth.js";
-import { meterSummary } from "../meter/meter.js";
+import { meterSummary, ingestEvent } from "../meter/meter.js";
 import { meterReport } from "../meter/report.js";
 import { savingsPotential } from "../meter/potential.js";
 import {
@@ -25,7 +25,9 @@ import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
 import { setProviderKey, listProviders, type Provider } from "../keys/providerKeys.js";
 import { getPolicy, setPolicy, DEFAULT_POLICY, type TenantPolicy } from "../engines/policy.js";
-import { controllerCheck } from "../engines/controller.js";
+import { controllerCheck, estTokens } from "../engines/controller.js";
+import { toolCacheLookup, toolCacheStore } from "../engines/recycle/toolcache.js";
+import { randomUUID } from "node:crypto";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
 
@@ -191,6 +193,93 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       maxOutputTokens: b.max_output_tokens ?? 4096,
       seatId: b.seat_id,
     });
+  });
+
+  // ---- wave 4: deterministic tool-call cache (hook + tool path) ----
+  // Lookup books the hit event server-side (est_cost_usd from the allowlist
+  // entry; unset books $0 - hits are counted honestly, dollars never invented).
+  app.post("/v1/toolcache/lookup", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as { tool?: string; args?: unknown; seat_id?: string };
+    if (!b?.tool || !b?.seat_id)
+      throw Object.assign(new Error("tool and seat_id required"), { statusCode: 400 });
+    const policy = await getPolicy(ctx);
+    const res = await toolCacheLookup(ctx, policy, b.tool, b.args ?? {});
+    if (res.hit) {
+      const seat = await ctx.db.query<{
+        identity_type: "human" | "named_agent";
+        user_id: string;
+        team_id: string | null;
+        agent_identity: string | null;
+      }>(
+        `SELECT identity_type, user_id, team_id, agent_identity FROM seats WHERE seat_id = $1 AND active`,
+        [b.seat_id],
+      );
+      if (seat.rows.length > 0) {
+        const s = seat.rows[0];
+        const resultTokens = estTokens(JSON.stringify(res.result).length);
+        const pricing = deps.gateway.getPricing();
+        await ingestEvent(ctx, {
+          event_id: randomUUID(),
+          call_id: randomUUID(),
+          schema_version: "1.0",
+          ts: new Date().toISOString(),
+          seat_id: b.seat_id,
+          identity_type: s.identity_type,
+          user_id: s.user_id,
+          team_id: s.team_id,
+          agent_identity: s.agent_identity,
+          host: "claude_code",
+          capture_path: "hook",
+          session_id: null,
+          module: "recycle",
+          intervention_type: "toolcall_cache",
+          model_requested: null,
+          model_used: null,
+          tokens: {
+            input_counterfactual: 0,
+            output_counterfactual: resultTokens,
+            input_actual: 0,
+            output_actual: 0,
+          },
+          cost: {
+            counterfactual_usd: res.est_cost_usd,
+            actual_usd: 0,
+            avoided_usd: res.est_cost_usd,
+            currency: "USD",
+            pricing_source: "meter",
+            pricing_version: pricing?.pricing_version ?? "unpriced",
+          },
+          energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
+          carbon: {
+            avoided_co2e_g: 0,
+            grid_intensity_g_per_kwh: 400,
+            pue: 1.2,
+            region: null,
+            method: "EcoLogits-class",
+            confidence: "Estimated",
+          },
+          methodology_version: "esg-v1",
+          asset_ref: null,
+          cache_ref: { cache_key: res.key, layer: "exact", similarity: 1 },
+          sourcing: null,
+          catalog_reserved: null,
+        });
+      }
+    }
+    return res;
+  });
+
+  app.post("/v1/toolcache/store", async (req, reply) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as { tool?: string; args?: unknown; result?: unknown };
+    if (!b?.tool)
+      throw Object.assign(new Error("tool required"), { statusCode: 400 });
+    const policy = await getPolicy(ctx);
+    const res = await toolCacheStore(ctx, policy, b.tool, b.args ?? {}, b.result ?? null);
+    return reply.status(res.stored ? 201 : 200).send(res);
   });
 
   // ---- meter (WS3 pipeline: validate -> normalize/re-price -> append) ----

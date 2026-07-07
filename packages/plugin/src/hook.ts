@@ -50,11 +50,30 @@ const isMain =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   try {
-    const payload = JSON.parse(await readStdin()) as HookPayload;
+    const payload = JSON.parse(await readStdin()) as HookPayload & {
+      tool_input?: unknown;
+    };
+    const cfg = loadPluginConfig();
     const call = callFromHookPayload(payload);
     if (call) {
-      const cfg = loadPluginConfig();
       await new BackendClient(cfg).postEvent(buildObserveEvent(cfg, call));
+    }
+    // wave 4: offer the result to the tool-call cache (server-side allowlist
+    // decides whether to store; misses are free and silent)
+    if (payload.tool_name && payload.tool_response !== undefined) {
+      await fetch(`${cfg.backendUrl}/v1/toolcache/store`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${cfg.token}`,
+          "x-tenant-id": cfg.tenantId,
+        },
+        body: JSON.stringify({
+          tool: payload.tool_name,
+          args: payload.tool_input ?? {},
+          result: payload.tool_response,
+        }),
+      });
     }
   } catch {
     // never break the host tool call over metering

@@ -95,6 +95,33 @@ CREATE TABLE IF NOT EXISTS gateway_credentials (
 );
 CREATE INDEX IF NOT EXISTS gateway_credentials_seat ON gateway_credentials (seat_id);
 
+-- Wave 4: deterministic tool-call cache (§6.2 exact-args + freshness-bucket key).
+CREATE TABLE IF NOT EXISTS tool_cache (
+  key        text PRIMARY KEY,             -- sha256(tool + canonical args + bucket window)
+  tool       text NOT NULL,
+  bucket     text NOT NULL,
+  result     jsonb NOT NULL,
+  hits       int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_cache_exp ON tool_cache (expires_at);
+
+-- Wave 4: response cache - layer 1 exact + layer 2 gated semantic (§6.8, AD2).
+CREATE TABLE IF NOT EXISTS response_cache (
+  key        text PRIMARY KEY,             -- sha256(scope + model + canonical request)
+  scope      text NOT NULL,                -- seat_id or 'tenant' (per-context scoping)
+  model      text NOT NULL,
+  query_text text NOT NULL,                -- last user message (semantic layer input)
+  embedding  vector(1536),                 -- null until semantic layer embeds it
+  response   jsonb NOT NULL,
+  usage      jsonb NOT NULL,               -- recorded token usage (counterfactual basis)
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS response_cache_exp   ON response_cache (expires_at);
+CREATE INDEX IF NOT EXISTS response_cache_scope ON response_cache (scope);
+
 -- Append-only: the meter's integrity depends on events never mutating (AD4).
 CREATE OR REPLACE FUNCTION reject_mutation() RETURNS trigger AS $$
 BEGIN

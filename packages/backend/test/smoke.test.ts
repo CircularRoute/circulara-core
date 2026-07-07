@@ -610,11 +610,14 @@ test("M2 gateway: credential -> seat attribution, BYO key forwarding, metering",
       headers: { ...ADMIN, ...th },
     })
   ).json() as { credential: string };
+  // distinct payloads per call: this test proves ATTRIBUTION; identical
+  // payloads would (correctly) hit the wave-4 response cache instead
+  let n = 0;
   for (const cred of [credA.credential, credA.credential, credB.credential]) {
     const r = await app.inject({
       method: "POST", url: "/gateway/anthropic/v1/messages",
       headers: { ...th, "x-api-key": cred },
-      payload: { model: "claude-haiku-4-5-20251001", max_tokens: 8, messages: [{ role: "user", content: "hi" }] },
+      payload: { model: "claude-haiku-4-5-20251001", max_tokens: 8, messages: [{ role: "user", content: `hi ${n++}` }] },
     });
     assert.equal(r.statusCode, 200); // fake forward proves REAL key arrived
   }
@@ -1118,4 +1121,252 @@ test("wave3 Reduce passes: cap conservative rule + prompt-cache measured savings
   });
   assert.equal(cache.length, 1);
   assert.ok(Math.abs(cache[0].avoided_usd - 10000 * 1e-6 * 0.9) < 1e-12);
+});
+
+// ---------- wave 4 (Recycle: tool-call cache + response cache) ----------
+
+test("wave4 tool-call cache: allowlist-only, bucket windows, hit books configured cost", async () => {
+  const { toolCacheKey, bucketWindow, canonicalJson } = await import(
+    "../src/engines/recycle/toolcache.js"
+  );
+  // canonical json: key order does not matter
+  assert.equal(canonicalJson({ b: 1, a: [2, { d: 3, c: 4 }] }), canonicalJson({ a: [2, { c: 4, d: 3 }], b: 1 }));
+  // bucket windows in the key: daily key changes across days
+  const d1 = new Date("2026-07-07T10:00:00Z");
+  const d2 = new Date("2026-07-08T10:00:00Z");
+  assert.notEqual(toolCacheKey("t", { q: 1 }, "daily", d1), toolCacheKey("t", { q: 1 }, "daily", d2));
+  assert.equal(toolCacheKey("t", { q: 1 }, "static", d1), toolCacheKey("t", { q: 1 }, "static", d2));
+  assert.equal(bucketWindow("hourly", d1), "2026-07-07T10");
+
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "tc" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|tc" },
+    })
+  ).json() as { seat_id: string };
+
+  // not allowlisted -> store is a no-op, lookup not cacheable
+  const s0 = await app.inject({
+    method: "POST", url: "/v1/toolcache/store",
+    headers: { ...SEAT, ...th },
+    payload: { tool: "sql_select", args: { q: "SELECT 1" }, result: { rows: [1] } },
+  });
+  assert.equal(s0.statusCode, 200);
+  assert.equal((s0.json() as { stored: boolean }).stored, false);
+
+  // allowlist the tool with an est cost
+  await app.inject({
+    method: "PUT", url: "/v1/policy",
+    headers: { ...ADMIN, ...th },
+    payload: { recycle: { toolcall: { allow: [{ tool: "sql_select", bucket: "daily", est_cost_usd: 0.05 }] } } },
+  });
+  const s1 = await app.inject({
+    method: "POST", url: "/v1/toolcache/store",
+    headers: { ...SEAT, ...th },
+    payload: { tool: "sql_select", args: { q: "SELECT 1" }, result: { rows: [1] } },
+  });
+  assert.equal(s1.statusCode, 201);
+
+  // same args -> hit + event booked with est cost; different args -> miss
+  const hit = (
+    await app.inject({
+      method: "POST", url: "/v1/toolcache/lookup",
+      headers: { ...SEAT, ...th },
+      payload: { tool: "sql_select", args: { q: "SELECT 1" }, seat_id },
+    })
+  ).json() as { hit: boolean; result: { rows: number[] }; est_cost_usd: number };
+  assert.equal(hit.hit, true);
+  assert.deepEqual(hit.result.rows, [1]);
+  const miss = (
+    await app.inject({
+      method: "POST", url: "/v1/toolcache/lookup",
+      headers: { ...SEAT, ...th },
+      payload: { tool: "sql_select", args: { q: "SELECT 2" }, seat_id },
+    })
+  ).json() as { hit: boolean };
+  assert.equal(miss.hit, false);
+
+  const sum = (
+    await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, ...th } })
+  ).json() as { avoided_usd: number; events: number };
+  assert.equal(sum.events, 1);
+  assert.ok(Math.abs(sum.avoided_usd - 0.05) < 1e-9);
+});
+
+test("wave4 response cache: exact hit end to end, avoided = full skipped cost", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "rc" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|rc" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/provider-keys/anthropic",
+    headers: { ...ADMIN, ...th }, payload: { key: "sk-ant-test-real-key" },
+  });
+  const { credential } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${seat_id}/gateway-credential`,
+      headers: { ...ADMIN, ...th },
+    })
+  ).json() as { credential: string };
+
+  const ask = () =>
+    app.inject({
+      method: "POST", url: "/gateway/anthropic/v1/messages",
+      headers: { ...th, "x-api-key": credential },
+      payload: {
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "What is the capital of France?" }],
+      },
+    });
+
+  // first call: real forward + stored; second: served from cache
+  const r1 = await ask();
+  assert.equal(r1.statusCode, 200);
+  const r2 = await ask();
+  assert.equal(r2.statusCode, 200);
+  assert.deepEqual(r2.json(), r1.json()); // identical cached response
+
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as {
+    events: number; observed_usd: number; avoided_usd: number;
+    by_module: { key: string; avoided_usd: number }[];
+  };
+  // call 1: observe 0.0002. call 2: recycle hit, avoided 0.0002, spent 0.
+  assert.equal(report.events, 2);
+  assert.ok(Math.abs(report.observed_usd - 0.0002) < 1e-9);
+  assert.ok(Math.abs(report.avoided_usd - 0.0002) < 1e-9);
+  const recycle = report.by_module.find((m) => m.key === "recycle");
+  assert.ok(recycle && Math.abs(recycle.avoided_usd - 0.0002) < 1e-9);
+});
+
+test("wave4 response cache GATES (the poison surface): time-sensitive, history, scope, tools", async () => {
+  const { responseCacheGates, exactKey, scopeKey } = await import(
+    "../src/engines/recycle/responseCache.js"
+  );
+  const { DEFAULT_POLICY } = await import("../src/engines/policy.js");
+
+  const base = (content: string, extra: Record<string, unknown> = {}) => ({
+    model: "m",
+    messages: [{ role: "user", content }],
+    ...extra,
+  });
+
+  // G1: time-sensitive never cacheable
+  for (const q of [
+    "What is the weather in NYC today?",
+    "latest news on the merger",
+    "current price of bitcoin",
+    "What is the score right now",
+  ]) {
+    assert.equal(responseCacheGates(DEFAULT_POLICY, base(q)).cacheable, false, q);
+  }
+  // stable/factual passes
+  assert.equal(
+    responseCacheGates(DEFAULT_POLICY, base("What is the capital of France?")).cacheable,
+    true,
+  );
+  // G2: long conversations rejected
+  assert.equal(
+    responseCacheGates(DEFAULT_POLICY, {
+      model: "m",
+      messages: [
+        { role: "user", content: "a" },
+        { role: "assistant", content: "b" },
+        { role: "user", content: "c" },
+      ],
+    }).cacheable,
+    false,
+  );
+  // G6: tool-using requests rejected
+  assert.equal(
+    responseCacheGates(DEFAULT_POLICY, base("stable question", { tools: [{ name: "x" }] })).cacheable,
+    false,
+  );
+  // G3: seat scoping - same request, different seats -> different keys
+  const bodyX = base("What is my account status?");
+  assert.notEqual(exactKey("seat-A", bodyX), exactKey("seat-B", bodyX));
+  assert.equal(scopeKey(DEFAULT_POLICY, "seat-A"), "seat-A");
+  // semantic threshold floor: policy cannot go below 0.92
+  const { getPolicy, setPolicy } = await import("../src/engines/policy.js");
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "floor" } })
+  ).json() as { tenant_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  const pol = structuredClone(DEFAULT_POLICY);
+  pol.recycle.response.semantic_threshold = 0.5; // attacker-friendly config attempt
+  await setPolicy(ctx, pol);
+  const loaded = await getPolicy(ctx);
+  assert.equal(loaded.recycle.response.semantic_threshold, 0.92);
+});
+
+test("wave4 semantic layer: gated hit with fake embedder; sub-threshold refuses", async () => {
+  const { responseCacheLookup, responseCacheStore } = await import(
+    "../src/engines/recycle/responseCache.js"
+  );
+  const { DEFAULT_POLICY } = await import("../src/engines/policy.js");
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "sem" } })
+  ).json() as { tenant_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  const pol = structuredClone(DEFAULT_POLICY);
+  pol.recycle.response.semantic_enabled = true;
+
+  // fake 1536-dim embedder: "France" and "France please" near-identical;
+  // "Finland" orthogonal-ish (the poison pair)
+  const vec = (seedChar: string) => {
+    const v = new Array(1536).fill(0);
+    v[seedChar.charCodeAt(0) % 1536] = 1;
+    return v;
+  };
+  const embedder = async (text: string) => {
+    if (text.includes("Finland")) return vec("Z");
+    return vec("F"); // France-family
+  };
+
+  const franceBody = {
+    model: "m",
+    messages: [{ role: "user", content: "What is the capital of France?" }],
+  };
+  await responseCacheStore(
+    ctx, pol, "seat-1", franceBody,
+    { content: [{ text: "Paris" }] }, { input_tokens: 10, output_tokens: 2 }, embedder,
+  );
+
+  // near-identical phrasing -> semantic hit (sim 1.0 with the fake embedder)
+  const paraphrase = {
+    model: "m",
+    messages: [{ role: "user", content: "What is the capital of France please?" }],
+  };
+  const hit = await responseCacheLookup(ctx, pol, "seat-1", paraphrase, embedder);
+  assert.ok(hit && hit.layer === "semantic");
+
+  // POISON: structurally similar, semantically distinct -> must NOT hit
+  const finland = {
+    model: "m",
+    messages: [{ role: "user", content: "What is the capital of Finland?" }],
+  };
+  const poison = await responseCacheLookup(ctx, pol, "seat-1", finland, embedder);
+  assert.equal(poison, null);
+
+  // cross-seat scope: same question, other seat -> no hit (G3)
+  const crossSeat = await responseCacheLookup(ctx, pol, "seat-2", paraphrase, embedder);
+  assert.equal(crossSeat, null);
+
+  // no embedder configured -> semantic layer silently unavailable
+  const noEmb = await responseCacheLookup(ctx, pol, "seat-1", paraphrase, null);
+  assert.equal(noEmb, null);
 });

@@ -17,6 +17,26 @@ export interface TenantPolicy {
     tool_pruning: { enabled: boolean; allow: string[] | null }; // null = keep all
     prompt_cache: boolean; // inject provider cache_control on stable blocks
   };
+  // Wave 4 - Recycle. STRICTLY gated (§6.8): one wrong reuse erodes fleet trust.
+  recycle: {
+    toolcall: {
+      // Deterministic tool-call cache is ALLOWLIST-ONLY: cache nothing until an
+      // admin declares a tool deterministic and picks its freshness bucket.
+      allow: {
+        tool: string; // exact tool name
+        bucket: "static" | "daily" | "hourly"; // freshness bucket (§6.2)
+        est_cost_usd?: number; // optional: what a re-run costs (paid API fee); unset = book $0, count the hit honestly
+      }[];
+    };
+    response: {
+      exact_enabled: boolean; // layer 1: identical request bytes, scoped + TTLed
+      semantic_enabled: boolean; // layer 2: OPT-IN (embedding similarity)
+      ttl_seconds: number; // conservative default 900
+      scope: "seat" | "tenant"; // per-context scoping (§6.8); seat = safest
+      semantic_threshold: number; // >= 0.95 enforced floor 0.92
+      max_history_messages: number; // conversation-history thresholding (§6.8)
+    };
+  };
 }
 
 export const DEFAULT_POLICY: TenantPolicy = {
@@ -31,6 +51,17 @@ export const DEFAULT_POLICY: TenantPolicy = {
     tool_pruning: { enabled: false, allow: null }, // opt-in: needs org knowledge
     prompt_cache: true, // safe: provider-native, no quality effect
   },
+  recycle: {
+    toolcall: { allow: [] }, // allowlist-only: zero-config caches NOTHING
+    response: {
+      exact_enabled: true, // identical bytes, seat-scoped, short TTL: safe
+      semantic_enabled: false, // OPT-IN: the accuracy-risk layer (§6.8)
+      ttl_seconds: 900,
+      scope: "seat",
+      semantic_threshold: 0.95,
+      max_history_messages: 2, // single-turn only by default
+    },
+  },
 };
 
 export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
@@ -41,11 +72,25 @@ export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
   const raw = r.rows[0].value;
   const stored = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<TenantPolicy>;
   // merge over defaults so new fields get sane values for old tenants
-  return {
+  const merged: TenantPolicy = {
     ...DEFAULT_POLICY,
     ...stored,
     reduce: { ...DEFAULT_POLICY.reduce, ...(stored.reduce ?? {}) },
+    recycle: {
+      toolcall: {
+        ...DEFAULT_POLICY.recycle.toolcall,
+        ...(stored.recycle?.toolcall ?? {}),
+      },
+      response: {
+        ...DEFAULT_POLICY.recycle.response,
+        ...(stored.recycle?.response ?? {}),
+      },
+    },
   };
+  // hard floor (§6.8): semantic threshold can never be configured below 0.92
+  if (merged.recycle.response.semantic_threshold < 0.92)
+    merged.recycle.response.semantic_threshold = 0.92;
+  return merged;
 }
 
 export async function setPolicy(

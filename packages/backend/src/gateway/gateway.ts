@@ -28,6 +28,13 @@ import {
   estTokens,
 } from "../engines/controller.js";
 import { applyReduce, stageSavings } from "../engines/reduce.js";
+import {
+  responseCacheLookup,
+  responseCacheStore,
+  type EmbedderPort,
+} from "../engines/recycle/responseCache.js";
+import { makeOpenAIEmbedder } from "../engines/recycle/embedder.js";
+import { priceTokens } from "../meter/compute.js";
 import { ingestEvent } from "../meter/meter.js";
 
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -43,6 +50,8 @@ export interface GatewayDeps {
     providerKey: string,
     headers: Record<string, string>,
   ) => Promise<{ status: number; json: unknown }>;
+  /** test seam: replaces the BYO-key embedder (semantic cache layer) */
+  embedder?: EmbedderPort | null;
 }
 
 async function defaultForward(
@@ -168,6 +177,76 @@ export async function handleGatewayMessage(
   const finalModel =
     typeof reduced.body["model"] === "string" ? (reduced.body["model"] as string) : model;
 
+  // ---- wave 4: Recycle - response cache check AFTER reduce (key matches the
+  // normalized request) and BEFORE forward. All §6.8 gates run inside. ----
+  let embedder: EmbedderPort | null = deps.embedder ?? null;
+  if (
+    embedder === null &&
+    deps.embedder === undefined &&
+    policy.recycle.response.semantic_enabled
+  ) {
+    const openaiKey = await getProviderKey(ctx, deps.kek, "openai");
+    embedder = openaiKey ? makeOpenAIEmbedder(openaiKey) : null;
+  }
+  const cached = await responseCacheLookup(ctx, policy, seatId, reduced.body, embedder);
+  if (cached) {
+    // hit = the skipped call's FULL cost avoided; nothing actually spent
+    const avoided = priceTokens(
+      pricing,
+      finalModel,
+      cached.usage.input_tokens,
+      cached.usage.output_tokens,
+    ).usd;
+    await ingestEvent(ctx, {
+      event_id: randomUUID(),
+      call_id: randomUUID(),
+      schema_version: "1.0",
+      ts: new Date().toISOString(),
+      seat_id: seatId,
+      identity_type: s.identity_type,
+      user_id: s.user_id,
+      team_id: s.team_id,
+      agent_identity: s.agent_identity,
+      host: fc.host,
+      capture_path: "gateway",
+      session_id: null,
+      module: "recycle",
+      intervention_type:
+        cached.layer === "exact" ? "response_cache_exact" : "response_cache_semantic",
+      model_requested: model,
+      model_used: finalModel,
+      tokens: {
+        input_counterfactual: cached.usage.input_tokens,
+        output_counterfactual: cached.usage.output_tokens,
+        input_actual: 0,
+        output_actual: 0,
+      },
+      cost: {
+        counterfactual_usd: avoided,
+        actual_usd: 0,
+        avoided_usd: avoided,
+        currency: "USD",
+        pricing_source: "meter",
+        pricing_version: pricing?.pricing_version ?? "unpriced",
+      },
+      energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
+      carbon: {
+        avoided_co2e_g: 0,
+        grid_intensity_g_per_kwh: 400,
+        pue: 1.2,
+        region: null,
+        method: "EcoLogits-class",
+        confidence: "Estimated",
+      },
+      methodology_version: "esg-v1",
+      asset_ref: null,
+      cache_ref: { cache_key: cached.key, layer: cached.layer, similarity: cached.similarity },
+      sourcing: null,
+      catalog_reserved: null,
+    });
+    return { status: 200, json: cached.response };
+  }
+
   const forward = deps.forward ?? defaultForward;
   const res = await forward(fc.url, reduced.body, providerKey, headers);
 
@@ -245,6 +324,16 @@ export async function handleGatewayMessage(
       outputTokens: usage.output,
       callId,
     });
+    // wave 4: store for future hits (gates re-run inside; ungateable never stored)
+    await responseCacheStore(
+      ctx,
+      policy,
+      seatId,
+      reduced.body,
+      res.json,
+      { input_tokens: usage.input, output_tokens: usage.output },
+      embedder,
+    );
   }
   return res;
 }
