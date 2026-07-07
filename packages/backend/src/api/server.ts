@@ -28,6 +28,8 @@ import { getPolicy, setPolicy, DEFAULT_POLICY, type TenantPolicy } from "../engi
 import { controllerCheck, estTokens } from "../engines/controller.js";
 import { toolCacheLookup, toolCacheStore } from "../engines/recycle/toolcache.js";
 import { captureAsset } from "../engines/reuse/library.js";
+import type { ClassifierPort } from "../engines/clearance/pipeline.js";
+import type { TenantContext } from "../db/tenancy.js";
 import { acquireAsset, type AcquireRequest, type SeatRef } from "../sourcing/acquire.js";
 import type { CommonsStore } from "../sourcing/commons.js";
 import type { FederatedIndex } from "../sourcing/catalogs.js";
@@ -42,6 +44,8 @@ export interface AppDeps {
   gateway: GatewayDeps;
   commons: CommonsStore;
   index: FederatedIndex;
+  /** wave 6: LLM classifier factory (BYO cheap model); null = unclassified-conservative */
+  classifierFor?: (ctx: TenantContext) => Promise<ClassifierPort | null>;
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -262,6 +266,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         statusCode: 400,
       });
     const policy = await getPolicy(ctx);
+    const classifier = deps.classifierFor ? await deps.classifierFor(ctx) : null;
     const res = await captureAsset(
       ctx,
       deps.objects,
@@ -276,6 +281,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         schema_json: b.schema_json,
       },
       deps.gateway.embedder ?? null,
+      classifier,
     );
     return reply.status(res.captured ? 201 : 422).send(res);
   });
@@ -415,6 +421,103 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get("/v1/commons/stats", async (req) => {
     await auth(req);
     return deps.commons.stats();
+  });
+
+  // ---- wave 6: sharing-tier promotion + audit trail (§6 steps 5-6) ----
+  app.post("/v1/assets/:fp/promote", async (req, reply) => {
+    const role = await auth(req);
+    const ctx = await tenantCtx(req);
+    const { fp } = req.params as { fp: string };
+    const b = req.body as { to_tier?: string; approver?: string };
+    const { TIER_ORDER, minTier } = await import("../engines/clearance/pipeline.js");
+    const { auditLog } = await import("../engines/clearance/pipeline.js");
+    const to = b?.to_tier as (typeof TIER_ORDER)[number];
+    if (!to || !TIER_ORDER.includes(to))
+      return reply.status(400).send({ error: "to_tier must be private|team|org|marketable" });
+    const row = await ctx.db.query<{
+      sharing_tier: string;
+      clearance: { max_tier?: string } | null;
+      license: { redistributable?: boolean };
+      provenance: { source?: string };
+    }>(
+      `SELECT sharing_tier, clearance, license, provenance FROM assets WHERE exact_fp = $1`,
+      [fp],
+    );
+    if (row.rows.length === 0) return reply.status(404).send({ error: "unknown asset" });
+    const asset = row.rows[0];
+    const deny = async (reason: string, status = 403) => {
+      await auditLog(ctx, {
+        exact_fp: fp,
+        action: "promote_denied",
+        actor: b?.approver ?? "unnamed",
+        detail: { to_tier: to, reason },
+      });
+      return reply.status(status).send({ error: reason });
+    };
+    // the clearance cap from capture time is binding
+    const cap = (asset.clearance?.max_tier ?? "org") as (typeof TIER_ORDER)[number];
+    if (minTier(to, cap) !== to)
+      return deny(`clearance pipeline capped this asset at '${cap}' - promotion to '${to}' refused`);
+    // marketable: named human, ALWAYS + license must be verifiably redistributable
+    if (to === "marketable") {
+      if (!b?.approver)
+        return deny("promotion to marketable ALWAYS requires a named human approver - no exceptions (§6 step 5)", 400);
+      if (asset.license?.redistributable !== true)
+        return deny("marketable requires a verifiably redistributable license");
+    }
+    // org: auto-approve only if policy says so; otherwise a named human
+    if (to === "org") {
+      const policy = await getPolicy(ctx);
+      if (!policy.clearance.auto_approve_org && !b?.approver)
+        return deny("org promotion requires a named approver (auto_approve_org is off)", 400);
+    }
+    if ((to === "org" || to === "marketable") && role !== "admin")
+      return deny("org/marketable promotion is admin-only");
+    await ctx.db.query(`UPDATE assets SET sharing_tier = $1 WHERE exact_fp = $2`, [to, fp]);
+    await auditLog(ctx, {
+      exact_fp: fp,
+      action: "promote",
+      actor: b?.approver ?? "policy:auto_approve_org",
+      detail: { from: asset.sharing_tier, to },
+    });
+    return { exact_fp: fp, sharing_tier: to, approver: b?.approver ?? null };
+  });
+
+  app.get("/v1/clearance/audit", async (req) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const r = await ctx.db.query(
+      `SELECT id, exact_fp, action, actor, detail, false_positive, ts
+         FROM clearance_audit ORDER BY ts DESC LIMIT 200`,
+    );
+    return { entries: r.rows };
+  });
+
+  // FP-rate metric: admin marks an over-block as a false positive
+  app.post("/v1/clearance/audit/:id/false-positive", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const { id } = req.params as { id: string };
+    await ctx.db.query(`UPDATE clearance_audit SET false_positive = true WHERE id = $1`, [id]);
+    return reply.status(204).send();
+  });
+
+  app.get("/v1/clearance/stats", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const r = await ctx.db.query<{ action: string; n: number; fp: number }>(
+      `SELECT action, count(*)::int AS n,
+              count(*) FILTER (WHERE false_positive)::int AS fp
+         FROM clearance_audit GROUP BY action`,
+    );
+    const by = Object.fromEntries(r.rows.map((x) => [x.action, { n: x.n, false_positives: x.fp }]));
+    const blocks = (by.capture_blocked?.n ?? 0) + (by.promote_denied?.n ?? 0);
+    const fps = (by.capture_blocked?.false_positives ?? 0) + (by.promote_denied?.false_positives ?? 0);
+    return {
+      by_action: by,
+      false_positive_rate: blocks > 0 ? fps / blocks : 0,
+      note: "over-blocking starves the library; admins mark wrongly blocked items so the rate is measured, not guessed",
+    };
   });
 
   // ---- wave 4: deterministic tool-call cache (hook + tool path) ----

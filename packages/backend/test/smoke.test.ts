@@ -1717,3 +1717,165 @@ test("wave5 buy-or-build correctness: threshold capped at 0.70; expensive reuse 
   ).json() as { verdict: string };
   assert.equal(acq.verdict, "build"); // reuse must be an OBVIOUS win or nothing
 });
+
+// ---------- wave 6 (clearance pipeline) ----------
+
+test("wave6 pipeline: PII caps, classifier rules, license caps, secrets block (steps 1-4)", async () => {
+  const { runClearance, scanForPii } = await import("../src/engines/clearance/pipeline.js");
+  const { DEFAULT_POLICY } = await import("../src/engines/policy.js");
+  const internal = { producer: "org", source: "internal", build_method: "x" };
+  const licensed = { redistributable: true, spdx_or_terms: "CC-BY-4.0" };
+
+  // PII patterns incl. Luhn validation
+  assert.ok(scanForPii("reach me at jane@acme.com").some((f) => f.kind === "pii_email"));
+  assert.ok(scanForPii("ssn 123-45-6789").some((f) => f.kind === "pii_ssn"));
+  assert.ok(scanForPii("card 4539 1488 0343 6467").some((f) => f.kind === "pii_credit_card")); // valid Luhn
+  assert.ok(!scanForPii("card 1234 5678 9012 3456").some((f) => f.kind === "pii_credit_card")); // fails Luhn
+  assert.equal(scanForPii("clean corpus about recycling").length, 0);
+
+  // secrets = hard block, tier irrelevant
+  const blocked = await runClearance(
+    DEFAULT_POLICY,
+    { text: "key AKIAIOSFODNN7EXAMPLE here", provenance: internal, license: licensed },
+    null,
+  );
+  assert.equal(blocked.blocked, true);
+
+  // PII caps at team
+  const pii = await runClearance(
+    DEFAULT_POLICY,
+    { text: "customer email jane@acme.com in the export", provenance: internal, license: licensed },
+    null,
+  );
+  assert.equal(pii.blocked, false);
+  assert.equal(pii.max_tier, "team");
+
+  // classifier signal + policy rule: hr -> private (most restrictive wins)
+  const hr = await runClearance(
+    DEFAULT_POLICY,
+    { text: "salary bands for the engineering org", provenance: internal, license: licensed },
+    async () => ({ risk_category: "hr_personnel", confidence: "high" }),
+  );
+  assert.equal(hr.max_tier, "private");
+
+  // external + unknown license: capped at org, never marketable
+  const ext = await runClearance(
+    DEFAULT_POLICY,
+    {
+      text: "clean external dataset rows",
+      provenance: { producer: "external", source: "hf_hub", build_method: "pull" },
+      license: { redistributable: false, spdx_or_terms: null },
+    },
+    async () => ({ risk_category: "none", confidence: "high" }),
+  );
+  assert.equal(ext.max_tier, "org");
+
+  // classifier failure -> conservative, not crash
+  const broken = await runClearance(
+    DEFAULT_POLICY,
+    { text: "anything", provenance: internal, license: licensed },
+    async () => { throw new Error("api down"); },
+  );
+  assert.equal(broken.blocked, false);
+  assert.ok(broken.reasons.some((r) => r.includes("classifier unavailable")));
+});
+
+test("wave6 promotion gate + audit trail + FP rate (steps 5-6)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "clr" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+
+  // capture a clean, internally produced, redistributable asset
+  const spec = { asset_type: 2, source_checksum: "9".repeat(64), pipeline: "md", pipeline_version: "1" };
+  const cap = (
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: {
+        spec, content: "clean internal documentation corpus",
+        provenance: { producer: "org", source: "internal", build_method: "parse" },
+        license: { redistributable: true, spdx_or_terms: "CC-BY-4.0" },
+      },
+    })
+  ).json() as { exact_fp: string; clearance: { max_tier: string } };
+  assert.equal(cap.clearance.max_tier, "org"); // default cap
+
+  // marketable while capped at org -> refused whatever else is true (cap binds first)
+  const capped = await app.inject({
+    method: "POST", url: `/v1/assets/${cap.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "marketable", approver: "Rashad" },
+  });
+  assert.equal(capped.statusCode, 403);
+
+  // a marketable-capable asset (policy raises the default cap) still REQUIRES
+  // a named human for marketable - no exceptions
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true }, clearance: { default_max_tier: "marketable", rules: [], auto_approve_org: false } },
+  });
+  const spec2 = { asset_type: 2, source_checksum: "8".repeat(64), pipeline: "md", pipeline_version: "1" };
+  const cap2 = (
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: {
+        spec: spec2, content: "clean internal marketing corpus",
+        provenance: { producer: "org", source: "internal", build_method: "parse" },
+        license: { redistributable: true, spdx_or_terms: "CC-BY-4.0" },
+      },
+    })
+  ).json() as { exact_fp: string; clearance: { max_tier: string } };
+  assert.equal(cap2.clearance.max_tier, "marketable");
+  const noAppr = await app.inject({
+    method: "POST", url: `/v1/assets/${cap2.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "marketable" },
+  });
+  assert.equal(noAppr.statusCode, 400); // named human, ALWAYS
+  const mkt = await app.inject({
+    method: "POST", url: `/v1/assets/${cap2.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "marketable", approver: "Rashad (founder)" },
+  });
+  assert.equal(mkt.statusCode, 200);
+
+  // org promotion with named approver (auto_approve_org off by default)
+  const noName = await app.inject({
+    method: "POST", url: `/v1/assets/${cap.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "org" },
+  });
+  assert.equal(noName.statusCode, 400);
+  const org = await app.inject({
+    method: "POST", url: `/v1/assets/${cap.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "org", approver: "Rashad (founder)" },
+  });
+  assert.equal(org.statusCode, 200);
+
+  // non-admin cannot promote to org/marketable
+  const seatTry = await app.inject({
+    method: "POST", url: `/v1/assets/${cap.exact_fp}/promote`,
+    headers: { ...SEAT, ...th }, payload: { to_tier: "org", approver: "eve" },
+  });
+  assert.equal(seatTry.statusCode, 403);
+
+  // audit trail: capture + denials + promotion all present
+  const audit = (
+    await app.inject({ method: "GET", url: "/v1/clearance/audit", headers: { ...ADMIN, ...th } })
+  ).json() as { entries: { id: number; action: string }[] };
+  const actions = audit.entries.map((e) => e.action);
+  assert.ok(actions.includes("capture"));
+  assert.ok(actions.includes("promote"));
+  assert.ok(actions.filter((a) => a === "promote_denied").length >= 3);
+
+  // FP metric: mark one denial as a false positive; rate reflects it
+  const denied = audit.entries.find((e) => e.action === "promote_denied")!;
+  await app.inject({
+    method: "POST", url: `/v1/clearance/audit/${denied.id}/false-positive`,
+    headers: { ...ADMIN, ...th },
+  });
+  const stats = (
+    await app.inject({ method: "GET", url: "/v1/clearance/stats", headers: { ...SEAT, ...th } })
+  ).json() as { false_positive_rate: number };
+  assert.ok(stats.false_positive_rate > 0 && stats.false_positive_rate <= 1);
+});

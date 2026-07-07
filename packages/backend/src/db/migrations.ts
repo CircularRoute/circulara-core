@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS response_cache (
 CREATE INDEX IF NOT EXISTS response_cache_exp   ON response_cache (expires_at);
 CREATE INDEX IF NOT EXISTS response_cache_scope ON response_cache (scope);
 
+-- Wave 6: clearance verdict stored on the asset + the audit trail (§6 step 6).
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS clearance jsonb;
+
+CREATE TABLE IF NOT EXISTS clearance_audit (
+  id         bigserial PRIMARY KEY,
+  exact_fp   text,
+  action     text NOT NULL CHECK (action IN
+    ('capture','capture_blocked','classify','promote','promote_denied')),
+  actor      text NOT NULL,
+  detail     jsonb NOT NULL,
+  false_positive boolean NOT NULL DEFAULT false,   -- FP-rate metric (admin-marked)
+  ts         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS clearance_audit_fp ON clearance_audit (exact_fp);
+
 -- Wave 5: rung-4 purchase approvals (AD11: named human, no auto-purchase).
 CREATE TABLE IF NOT EXISTS purchase_approvals (
   proposal_id      uuid PRIMARY KEY,

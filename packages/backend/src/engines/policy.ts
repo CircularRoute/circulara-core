@@ -37,6 +37,12 @@ export interface TenantPolicy {
       max_history_messages: number; // conversation-history thresholding (§6.8)
     };
   };
+  // Wave 6 - clearance pipeline (§6, D9). Default-deny posture.
+  clearance: {
+    default_max_tier: "private" | "team" | "org" | "marketable"; // cap when nothing else applies
+    rules: { risk_category: string; max_tier: "private" | "team" | "org" | "marketable" }[];
+    auto_approve_org: boolean; // org promotion may auto-approve; marketable NEVER does
+  };
   // Wave 5 - Reuse library (§6.3-6.6).
   reuse: {
     capture_enabled: boolean; // DEFAULT OFF (§6.6): only capture what an admin enabled
@@ -69,6 +75,18 @@ export const DEFAULT_POLICY: TenantPolicy = {
       semantic_threshold: 0.95,
       max_history_messages: 2, // single-turn only by default
     },
+  },
+  clearance: {
+    default_max_tier: "org", // sane default: shareable inside the org, never outside
+    rules: [
+      { risk_category: "customer_data", max_tier: "team" },
+      { risk_category: "hr_personnel", max_tier: "private" },
+      { risk_category: "financial", max_tier: "team" },
+      { risk_category: "legal", max_tier: "private" },
+      { risk_category: "unannounced_product", max_tier: "team" },
+      { risk_category: "credentials_or_infra", max_tier: "private" },
+    ],
+    auto_approve_org: false, // default-deny: even org promotion wants a human until configured
   },
   reuse: {
     capture_enabled: false, // DEFAULT OFF (§6.6) - the standing rule
@@ -103,6 +121,7 @@ export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
     },
   };
   merged.reuse = { ...DEFAULT_POLICY.reuse, ...(stored.reuse ?? {}) };
+  merged.clearance = { ...DEFAULT_POLICY.clearance, ...(stored.clearance ?? {}) };
   // hard floor (§6.8): semantic threshold can never be configured below 0.92
   if (merged.recycle.response.semantic_threshold < 0.92)
     merged.recycle.response.semantic_threshold = 0.92;

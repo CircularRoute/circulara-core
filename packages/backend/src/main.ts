@@ -59,6 +59,13 @@ const app = buildApp({
   },
   commons,
   index,
+  // wave 6: classify on the tenant's own cheap model (BYO, §6 step 2)
+  classifierFor: async (ctx) => {
+    const { getProviderKey } = await import("./keys/providerKeys.js");
+    const { makeAnthropicClassifier } = await import("./engines/clearance/pipeline.js");
+    const key = await getProviderKey(ctx, parseKek(masterKeyHex!), "anthropic");
+    return key ? makeAnthropicClassifier(key) : null;
+  },
 });
 await app.listen({ port: cfg.port, host: "127.0.0.1" });
 console.log(

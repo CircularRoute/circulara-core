@@ -21,7 +21,13 @@ import {
   describeSpec,
   type AssetSpec,
 } from "./fingerprint.js";
-import { scanForSecrets, type ScanResult } from "./scanner.js";
+import { type ScanResult } from "./scanner.js";
+import {
+  runClearance,
+  auditLog,
+  type ClassifierPort,
+  type ClearanceVerdict,
+} from "../clearance/pipeline.js";
 
 export interface CaptureInput {
   spec: AssetSpec;
@@ -36,8 +42,8 @@ export interface CaptureInput {
 }
 
 export type CaptureResult =
-  | { captured: true; exact_fp: string }
-  | { captured: false; reason: string; scan?: ScanResult };
+  | { captured: true; exact_fp: string; clearance: ClearanceVerdict }
+  | { captured: false; reason: string; scan?: ScanResult; clearance?: ClearanceVerdict };
 
 export async function captureAsset(
   ctx: TenantContext,
@@ -45,6 +51,7 @@ export async function captureAsset(
   policy: TenantPolicy,
   input: CaptureInput,
   embedder: EmbedderPort | null,
+  classifier?: ClassifierPort | null,
 ): Promise<CaptureResult> {
   if (!policy.reuse.capture_enabled)
     return { captured: false, reason: "capture is OFF (default, §6.6) - enable in policy" };
@@ -54,10 +61,29 @@ export async function captureAsset(
       reason: `asset type ${input.spec.asset_type} not authorized for capture`,
     };
 
-  // HARD BLOCK: live credentials never enter the library at any tier.
-  const scan = scanForSecrets(input.bytes.toString("utf8"));
-  if (scan.blocked)
-    return { captured: false, reason: "secret scanner HARD BLOCK (§6 step 1)", scan };
+  // Wave 6: the full clearance pipeline runs at capture time (§6).
+  const verdict = await runClearance(
+    policy,
+    {
+      text: input.bytes.toString("utf8"),
+      provenance: input.provenance,
+      license: input.license ?? { redistributable: false, spdx_or_terms: null },
+    },
+    classifier ?? null,
+  );
+  if (verdict.blocked) {
+    await auditLog(ctx, {
+      exact_fp: null,
+      action: "capture_blocked",
+      actor: input.provenance.producer,
+      detail: { reasons: verdict.reasons, findings: verdict.findings },
+    });
+    return {
+      captured: false,
+      reason: "secret scanner HARD BLOCK (§6 step 1)",
+      clearance: verdict,
+    };
+  }
 
   const fp = exactFingerprint(input.spec);
   const checksum = await objects.put(ctx.tenantId, input.bytes);
@@ -69,8 +95,8 @@ export async function captureAsset(
     `INSERT INTO assets
        (exact_fp, asset_type, schema_json, sample_preview, semantic_vector,
         freshness_bucket, ttl_seconds, provenance, size_bytes, price, checksum,
-        quality, license, parent_fp, sharing_tier)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'private')
+        quality, license, parent_fp, sharing_tier, clearance)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'private',$15)
      ON CONFLICT (exact_fp) DO NOTHING`,
     [
       fp,
@@ -89,9 +115,21 @@ export async function captureAsset(
         input.license ?? { redistributable: false, spdx_or_terms: null }, // default NOT redistributable (D14)
       ),
       input.parent_fp ?? null,
+      JSON.stringify(verdict),
     ],
   );
-  return { captured: true, exact_fp: fp };
+  await auditLog(ctx, {
+    exact_fp: fp,
+    action: "capture",
+    actor: input.provenance.producer,
+    detail: {
+      max_tier: verdict.max_tier,
+      findings: verdict.findings,
+      classification: verdict.classification,
+      reasons: verdict.reasons,
+    },
+  });
+  return { captured: true, exact_fp: fp, clearance: verdict };
 }
 
 export interface AssetRow {
