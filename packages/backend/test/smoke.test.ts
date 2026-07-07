@@ -1879,3 +1879,77 @@ test("wave6 promotion gate + audit trail + FP rate (steps 5-6)", async () => {
   ).json() as { false_positive_rate: number };
   assert.ok(stats.false_positive_rate > 0 && stats.false_positive_rate <= 1);
 });
+
+// ---------- wave 7 (ESG export + statement) ----------
+
+test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "esg" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|esg" },
+    })
+  ).json() as { seat_id: string };
+  // one observe + one avoided event so both sides have data
+  for (const over of [
+    {},
+    {
+      module: "reduce", intervention_type: "compress",
+      tokens: { input_counterfactual: 9000, output_counterfactual: 1000, input_actual: 1000, output_actual: 200 },
+      cost: { counterfactual_usd: 0.05, actual_usd: 0.01, avoided_usd: 0.04, currency: "USD", pricing_source: "meter", pricing_version: "t" },
+    },
+  ]) {
+    const r = await app.inject({
+      method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+      payload: validEvent(seat_id, { ts: "2026-07-06T10:00:00Z", ...over }),
+    });
+    assert.equal(r.statusCode, 201);
+  }
+
+  const exp = (
+    await app.inject({ method: "GET", url: "/v1/meter/esg-export?month=2026-07", headers: { ...SEAT, ...th } })
+  ).json() as {
+    period: string;
+    methodology: { coefficients_version: string; sources: string[]; assumptions: string[] };
+    impact: Record<string, { low: number; median: number; high: number; confidence: string; source: string }>;
+    intensity: { co2e_g_per_1k_tokens: { median: number; confidence: string } };
+    totals: { external_data_spend_usd: number; avoided_cost_usd: number };
+    disclosure_note: string;
+    audit_grade: { available: boolean; note: string };
+  };
+  assert.equal(exp.period, "2026-07");
+  assert.ok(exp.methodology.coefficients_version.length > 0);
+  assert.ok(exp.methodology.sources.length >= 3);
+  assert.ok(exp.methodology.assumptions.length >= 3);
+  for (const [k, f] of Object.entries(exp.impact)) {
+    assert.ok(f.low <= f.median && f.median <= f.high, `${k} range ordered`);
+    assert.ok(["Measured", "Benchmarked", "Estimated"].includes(f.confidence), `${k} labeled`);
+    assert.ok(f.source.length > 0, `${k} sourced`);
+  }
+  assert.ok(exp.impact.avoided_co2e.median > 0); // avoided tokens flowed through
+  assert.ok(exp.intensity.co2e_g_per_1k_tokens.median > 0);
+  assert.equal(exp.audit_grade.available, false); // seam, not shipped (D8)
+  assert.ok(exp.disclosure_note.includes("not audit-grade"));
+
+  const csv = await app.inject({
+    method: "GET", url: "/v1/meter/esg-export?month=2026-07&format=csv", headers: { ...SEAT, ...th },
+  });
+  assert.equal(csv.statusCode, 200);
+  assert.ok(csv.headers["content-type"]?.includes("text/csv"));
+  assert.ok(csv.body.includes("observed_co2e"));
+  assert.ok(csv.body.includes("never netted")); // AD12 line survives into CSV
+
+  // statement: headline + breakdowns + $0 Observe fee + export links
+  const st = await app.inject({
+    method: "GET",
+    url: `/dashboard/statement?tenant=${t.tenant_id}&token=dev-seat-token&month=2026-07`,
+  });
+  assert.equal(st.statusCode, 200);
+  assert.ok(st.body.includes("Circulara saved you"));
+  assert.ok(st.body.includes("fee:"));
+  assert.ok(st.body.includes("By user") && st.body.includes("By team") && st.body.includes("By module"));
+  assert.ok(st.body.includes("esg-export"));
+});

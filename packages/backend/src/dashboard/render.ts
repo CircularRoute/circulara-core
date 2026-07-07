@@ -199,10 +199,25 @@ export function renderStatement(
   p: SavingsPotential,
   tenantQ: string,
   month: string,
+  feeUsd = 0, // Observe = $0; paid tiers wire computeInvoice (wave 8)
 ): string {
+  const breakdown = (title: string, rows: MeterReport["by_user"]) => `
+<h2 class="section">${title}</h2>
+<table><thead><tr><th>Key</th><th class="n">Tokens</th><th class="n">Observed</th><th class="n">Avoided</th></tr></thead><tbody>
+${rows
+  .map(
+    (s) =>
+      `<tr><td>${esc(s.key)}</td><td class="n">${num(s.tokens)}</td><td class="n">${usd(s.observed_usd)}</td><td class="n" style="color:var(--green-deep)">${usd(s.avoided_usd)}</td></tr>`,
+  )
+  .join("")}
+</tbody></table>`;
   const body = `
 ${capBanner(r)}
 ${capWatermark(r)}
+<div class="card" style="margin-bottom:24px">
+  <div class="label">The bottom line - ${esc(month)}</div>
+  <div class="fig">Circulara saved you <span class="fig green">${usd(r.avoided_usd)}</span> / ${num(Math.round(r.tokens_observed))} tokens observed / <span class="range">${co2Range(r.avoided_impact.co2e_g)}</span> avoided (${esc(r.avoided_impact.co2e_g.confidence)}) - fee: <span class="fig" style="font-size:22px">${usd(feeUsd)}</span></div>
+</div>
 <h2 class="section">Statement - ${esc(month)}</h2>
 <table><tbody>
 <tr><td>Observed provider spend</td><td class="n">${usd(r.observed_usd)}</td></tr>
@@ -213,11 +228,14 @@ ${capWatermark(r)}
 <tr><td>External data purchases (reported separately)</td><td class="n">${usd(r.external_spend_usd)}</td></tr>
 <tr><td>Estimated savings potential (range)</td><td class="n range" style="color:var(--green-deep)">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</td></tr>
 </tbody></table>
+${breakdown("By user", r.by_user)}
+${breakdown("By team", r.by_team)}
+${breakdown("By module", r.by_module)}
 <footer class="band">
-  Circulara Observe fee this month: <span class="fig" style="font-size:22px">$0</span> - free forever.
-  See your savings potential above; Team turns it on.
+  Fee this month: <span class="fig" style="font-size:22px">${usd(feeUsd)}</span>${feeUsd === 0 ? " - Observe is free forever. See your savings potential above; Team turns interventions on." : " - next to the savings above, the invoice justifies itself."}
 </footer>
-<p class="note">${esc(r.methodology_note)}</p>
+<p class="note">${esc(r.methodology_note)}
+ESG-ready export: <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}">JSON</a> - <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}&format=csv">CSV</a></p>
 `;
   return page(`Statement ${month}`, tenantQ, "statement", body);
 }

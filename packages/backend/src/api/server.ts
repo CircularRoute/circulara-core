@@ -681,6 +681,25 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       .send(renderStatement(r, p, tenantQ(tenantId, q, month), month));
   });
 
+  // ---- wave 7: ESG-ready export (credible-transparent, D8) ----
+  app.get("/v1/meter/esg-export", async (req, reply) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const q = req.query as { month?: string; format?: string };
+    if (q.month && !/^\d{4}-\d{2}$/.test(q.month))
+      throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
+    const { esgExport, esgExportCsv } = await import("../meter/esg.js");
+    const tenant = await deps.control.getTenant(ctx.tenantId);
+    const report = await meterReport(ctx, q.month);
+    const exp = esgExport(report, tenant?.name ?? ctx.tenantId);
+    if (q.format === "csv")
+      return reply
+        .type("text/csv")
+        .header("content-disposition", `attachment; filename=circulara-esg-${exp.period}.csv`)
+        .send(esgExportCsv(exp));
+    return exp;
+  });
+
   // ---- gateway metering mode (AD3 path B). Auth = per-seat credential. ----
   const credentialFrom = (req: FastifyRequest) =>
     (req.headers["x-api-key"] as string | undefined) ??
