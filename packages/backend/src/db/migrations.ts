@@ -77,6 +77,24 @@ CREATE INDEX IF NOT EXISTS meter_events_ts   ON meter_events (ts);
 CREATE INDEX IF NOT EXISTS meter_events_seat ON meter_events (seat_id, ts);
 CREATE INDEX IF NOT EXISTS meter_events_call ON meter_events (call_id);
 
+-- WS2: BYO provider keys, envelope-encrypted at rest (D4). One row per provider.
+CREATE TABLE IF NOT EXISTS provider_keys (
+  provider   text PRIMARY KEY,
+  blob       jsonb NOT NULL,               -- EnvelopeBlob (wrapped DEK + ciphertext)
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- WS2/M2: per-seat gateway credentials. The host sends the credential as its
+-- API key; the gateway maps hash -> seat_id, then forwards on the tenant's
+-- real provider key. Only the sha256 hash is stored.
+CREATE TABLE IF NOT EXISTS gateway_credentials (
+  cred_hash  text PRIMARY KEY,             -- sha256 hex of the credential
+  seat_id    uuid NOT NULL REFERENCES seats(seat_id),
+  active     boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS gateway_credentials_seat ON gateway_credentials (seat_id);
+
 -- Append-only: the meter's integrity depends on events never mutating (AD4).
 CREATE OR REPLACE FUNCTION reject_mutation() RETURNS trigger AS $$
 BEGIN

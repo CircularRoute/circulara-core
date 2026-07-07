@@ -7,7 +7,7 @@ import type { TenantContext } from "../db/tenancy.js";
 import {
   interventionEventSchema,
   type InterventionEvent,
-} from "../events/schema.js";
+} from "@circulara/schema";
 
 export async function ingestEvent(
   ctx: TenantContext,

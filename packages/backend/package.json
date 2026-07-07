@@ -1,0 +1,18 @@
+{
+  "name": "@circulara/backend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "test": "tsx --test test/*.test.ts",
+    "registry": "tsx src/registry/cli.ts"
+  },
+  "dependencies": {
+    "@circulara/schema": "*",
+    "@electric-sql/pglite": "^0.5.4",
+    "@electric-sql/pglite-pgvector": "^0.0.5",
+    "fastify": "^5.0.0",
+    "jose": "^6.0.0",
+    "zod": "3.25.76"
+  }
+}

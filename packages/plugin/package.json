@@ -1,0 +1,17 @@
+{
+  "name": "@circulara/plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "circulara-mcp": "src/server.ts",
+    "circulara-hook": "src/hook.ts"
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@circulara/schema": "*",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "3.25.76"
+  }
+}
