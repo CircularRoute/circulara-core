@@ -24,6 +24,8 @@ import {
 import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
 import { setProviderKey, listProviders, type Provider } from "../keys/providerKeys.js";
+import { getPolicy, setPolicy, DEFAULT_POLICY, type TenantPolicy } from "../engines/policy.js";
+import { controllerCheck } from "../engines/controller.js";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
 
@@ -147,6 +149,48 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await adminOnly(req);
     const ctx = await tenantCtx(req);
     return { configured: await listProviders(ctx) }; // names only, never values
+  });
+
+  // ---- wave 3: policy (admin) + controller check (any seat / hook path) ----
+  app.get("/v1/policy", async (req) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    return getPolicy(ctx);
+  });
+
+  app.put("/v1/policy", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const body = req.body as Partial<TenantPolicy>;
+    const merged: TenantPolicy = {
+      ...DEFAULT_POLICY,
+      ...body,
+      reduce: { ...DEFAULT_POLICY.reduce, ...(body.reduce ?? {}) },
+    };
+    await setPolicy(ctx, merged);
+    return reply.status(204).send();
+  });
+
+  // Hook-path Cost-Controller: the Claude Code PreToolUse hook asks before a
+  // call runs; verdict includes the hierarchy-aware ladder message (§4.3).
+  app.post("/v1/controller/check", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as {
+      model?: string;
+      input_chars?: number;
+      max_output_tokens?: number;
+      seat_id?: string;
+    };
+    if (!b?.model || !b?.seat_id)
+      throw Object.assign(new Error("model and seat_id required"), { statusCode: 400 });
+    const policy = await getPolicy(ctx);
+    return controllerCheck(ctx, policy, deps.gateway.getPricing(), {
+      model: b.model,
+      inputChars: b.input_chars ?? 0,
+      maxOutputTokens: b.max_output_tokens ?? 4096,
+      seatId: b.seat_id,
+    });
   });
 
   // ---- meter (WS3 pipeline: validate -> normalize/re-price -> append) ----

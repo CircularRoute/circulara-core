@@ -919,3 +919,203 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   });
   assert.equal(badMonth.statusCode, 400);
 });
+
+// ---------- wave 3 (Cost-Controller + Reduce) ----------
+
+test("wave3 Cost-Controller: allowlist + budget block with hierarchy ladder, avoided booked", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "ctrl" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|ctrl" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/provider-keys/anthropic",
+    headers: { ...ADMIN, ...th }, payload: { key: "sk-ant-test-real-key" },
+  });
+  const { credential } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${seat_id}/gateway-credential`,
+      headers: { ...ADMIN, ...th },
+    })
+  ).json() as { credential: string };
+
+  // policy: tiny org budget
+  const put = await app.inject({
+    method: "PUT", url: "/v1/policy",
+    headers: { ...ADMIN, ...th },
+    payload: { monthly_budget_usd: 0.0001 },
+  });
+  assert.equal(put.statusCode, 204);
+
+  // check endpoint returns block + ladder (hook path)
+  const chk = (
+    await app.inject({
+      method: "POST", url: "/v1/controller/check",
+      headers: { ...SEAT, ...th },
+      payload: { model: "claude-haiku-4-5-20251001", input_chars: 40000, max_output_tokens: 4000, seat_id },
+    })
+  ).json() as { action: string; ladder: { rung: string; status: string }[] };
+  assert.equal(chk.action, "block");
+  assert.equal(chk.ladder[0].rung, "org_library");
+  assert.equal(chk.ladder[0].status, "coming_soon");
+
+  // gateway path: blocked BEFORE forward (402), avoided cost booked
+  const gw = await app.inject({
+    method: "POST", url: "/gateway/anthropic/v1/messages",
+    headers: { ...th, "x-api-key": credential },
+    payload: { model: "claude-haiku-4-5-20251001", max_tokens: 4000, messages: [{ role: "user", content: "x".repeat(40000) }] },
+  });
+  assert.equal(gw.statusCode, 402);
+  const gwBody = gw.json() as { reason: string; ladder: unknown[] };
+  assert.ok(gwBody.reason.includes("budget"));
+  const sum = (
+    await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, ...th } })
+  ).json() as { avoided_usd: number; observed_usd: number; events: number };
+  assert.equal(sum.events, 1);
+  assert.ok(sum.avoided_usd > 0); // AVOIDED IS NONZERO - the wave-3 point
+  assert.equal(sum.observed_usd, 0); // nothing was spent
+
+  // model allowlist blocks a disallowed model outright
+  await app.inject({
+    method: "PUT", url: "/v1/policy",
+    headers: { ...ADMIN, ...th },
+    payload: { model_allowlist: ["claude-haiku-4-5-20251001"] },
+  });
+  const chk2 = (
+    await app.inject({
+      method: "POST", url: "/v1/controller/check",
+      headers: { ...SEAT, ...th },
+      payload: { model: "claude-opus-4-8", input_chars: 10, max_output_tokens: 100, seat_id },
+    })
+  ).json() as { action: string; reason: string };
+  assert.equal(chk2.action, "block");
+  assert.ok(chk2.reason.includes("allowlist"));
+});
+
+test("wave3 Reduce via gateway: routing + compression stages, M1 chain, report shows avoided", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "reduce" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|rdc" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/provider-keys/anthropic",
+    headers: { ...ADMIN, ...th }, payload: { key: "sk-ant-test-real-key" },
+  });
+  const { credential } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${seat_id}/gateway-credential`,
+      headers: { ...ADMIN, ...th },
+    })
+  ).json() as { credential: string };
+
+  // enable routing opus -> haiku; compression on by default
+  await app.inject({
+    method: "PUT", url: "/v1/policy",
+    headers: { ...ADMIN, ...th },
+    payload: {
+      reduce: {
+        routing: { enabled: true, map: { "claude-opus-4-8": "claude-haiku-4-5-20251001" }, simple_max_chars: 2000 },
+      },
+    },
+  });
+
+  // TEST_PRICING knows haiku only; add opus so routing savings price
+  TEST_PRICING.models["claude-opus-4-8"] = {
+    input_cost_per_token: 15e-6, output_cost_per_token: 75e-6, provider: "anthropic",
+  };
+
+  // simple request on opus -> routed to haiku by the gateway
+  const gw = await app.inject({
+    method: "POST", url: "/gateway/anthropic/v1/messages",
+    headers: { ...th, "x-api-key": credential },
+    payload: { model: "claude-opus-4-8", max_tokens: 100, messages: [{ role: "user", content: "What is 2+2?" }] },
+  });
+  assert.equal(gw.statusCode, 200);
+
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as {
+    avoided_usd: number; observed_usd: number;
+    by_module: { key: string; avoided_usd: number }[];
+  };
+  // fake forward: 100 in / 20 out. haiku actual = 100e-6+100e-6 = 0.0002
+  // routed avoided = opus(100,20)=0.0015+0.0015=0.003 minus haiku 0.0002 = 0.0028
+  assert.ok(Math.abs(report.observed_usd - 0.0002) < 1e-9);
+  assert.ok(Math.abs(report.avoided_usd - 0.0028) < 1e-9);
+  const reduceSlice = report.by_module.find((m) => m.key === "reduce");
+  assert.ok(reduceSlice && Math.abs(reduceSlice.avoided_usd - 0.0028) < 1e-9);
+
+  // M1: stage + terminal share one call_id; stage has actual=0
+  const ctx = await control.contextFor(t.tenant_id);
+  const rows = await ctx.db.query<{
+    call_id: string; intervention_type: string; actual_usd: string; avoided_usd: string;
+  }>(`SELECT call_id, intervention_type, actual_usd::text, avoided_usd::text FROM meter_events ORDER BY intervention_type`);
+  assert.equal(rows.rows.length, 2);
+  assert.equal(rows.rows[0].call_id, rows.rows[1].call_id);
+  const stage = rows.rows.find((r) => r.intervention_type === "route")!;
+  const terminal = rows.rows.find((r) => r.intervention_type === "observe")!;
+  assert.equal(Number(stage.actual_usd), 0);
+  assert.ok(Number(stage.avoided_usd) > 0);
+  assert.equal(Number(terminal.avoided_usd), 0);
+
+  // statement shows nonzero avoided (the wave-3 end-to-end proof)
+  const month = new Date().toISOString().slice(0, 7);
+  const st = await app.inject({
+    method: "GET",
+    url: `/dashboard/statement?tenant=${t.tenant_id}&token=dev-seat-token&month=${month}`,
+  });
+  assert.equal(st.statusCode, 200);
+  assert.ok(st.body.includes("Cost avoided by Circulara"));
+  assert.ok(st.body.includes("$0.0028"));
+});
+
+test("wave3 Reduce passes: cap conservative rule + prompt-cache measured savings", async () => {
+  const { applyReduce, stageSavings } = await import("../src/engines/reduce.js");
+  const { DEFAULT_POLICY } = await import("../src/engines/policy.js");
+  const pol = {
+    ...DEFAULT_POLICY,
+    reduce: { ...DEFAULT_POLICY.reduce, output_cap_tokens: 1000 },
+  };
+  const r = applyReduce(pol, {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 4000,
+    system: "s".repeat(5000),
+    messages: [{ role: "user", content: "hi" }],
+  });
+  assert.equal(r.body.max_tokens, 1000);
+  const capApplied = r.applied.find((a) => a.technique === "cap")!;
+  const cacheApplied = r.applied.find((a) => a.technique === "prompt_cache")!;
+  assert.ok(capApplied && cacheApplied);
+
+  // cap: NOT hit -> zero claimed
+  const notHit = stageSavings(TEST_PRICING, [capApplied], "claude-haiku-4-5-20251001", {
+    input: 100, output: 500, stop_reason: "end_turn",
+  });
+  assert.equal(notHit.length, 0);
+  // cap: hit -> avoided = (4000-1000) output tokens priced
+  const hit = stageSavings(TEST_PRICING, [capApplied], "claude-haiku-4-5-20251001", {
+    input: 100, output: 1000, stop_reason: "max_tokens",
+  });
+  assert.equal(hit.length, 1);
+  assert.ok(Math.abs(hit[0].avoided_usd - 3000 * 5e-6) < 1e-12);
+
+  // prompt cache: measured from provider-reported cache reads at 90% discount
+  const cache = stageSavings(TEST_PRICING, [cacheApplied], "claude-haiku-4-5-20251001", {
+    input: 100, output: 10, cache_read: 10000,
+  });
+  assert.equal(cache.length, 1);
+  assert.ok(Math.abs(cache[0].avoided_usd - 10000 * 1e-6 * 0.9) < 1e-12);
+});
