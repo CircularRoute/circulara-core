@@ -1,0 +1,39 @@
+# Wave 9 - nightly maintenance automation (D12).
+# Deterministic core runs nightly at $0 API spend. The poison slice (LLM
+# embeddings, ~$0.001/run) runs WEEKLY and needs OPENAI_API_KEY as a repo
+# secret - not set by default; enabling it is a founder action (spend).
+name: nightly
+on:
+  schedule:
+    - cron: "17 6 * * *" # nightly deterministic core
+    - cron: "47 6 * * 1" # weekly (Mon): poison slice, if the secret exists
+  workflow_dispatch: {}
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+        working-directory: .
+      - name: deterministic core (eval + suite + registry candidate)
+        run: npx tsx scripts/nightly.ts --with-registry
+      - name: poison slice (weekly, only when key configured)
+        if: github.event.schedule == '47 6 * * 1' && env.OPENAI_API_KEY != ''
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" > /tmp/ci.env
+          CIRCULARA_ENV_FILE=/tmp/ci.env npx tsx scripts/eval-poison.ts
+      - name: upload nightly report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-report
+          path: packages/backend/reports/
