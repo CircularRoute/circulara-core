@@ -33,6 +33,12 @@ const confidence = z.enum(["Measured", "Benchmarked", "Estimated"]);
 export const interventionEventSchema = z
   .object({
     event_id: z.string().uuid(),
+    // QA M1: correlates every event for ONE underlying call. Stacked
+    // interventions on a call form an ordered chain where each stage's
+    // counterfactual_usd = the previous stage's actual_usd, so per-call
+    // avoided_usd telescopes with no double-counting. Observe events (n2):
+    // counterfactual = actual, avoided = 0, one event per call.
+    call_id: z.string().uuid(),
     schema_version: z.enum(["1.0", "1.1"]),
     ts: z.string().datetime({ offset: true }),
 
@@ -133,8 +139,10 @@ export const interventionEventSchema = z
       .nullable()
       .default(null),
 
-    // reserved for the deferred supply side (D7); nullable in v1
-    marketplace: z
+    // reserved for the deferred supply side (D7); nullable in v1. Named
+    // catalog_reserved (QA n3): customer engineers read this schema and the
+    // banned v1 vocabulary stays out of it.
+    catalog_reserved: z
       .object({
         asset_id: z.string().nullable(),
         license_status: z.string().nullable(),

@@ -42,6 +42,7 @@ after(async () => {
 function validEvent(seatId: string, over: Record<string, unknown> = {}) {
   return {
     event_id: randomUUID(),
+    call_id: randomUUID(),
     schema_version: "1.0",
     ts: new Date().toISOString(),
     seat_id: seatId,
@@ -256,6 +257,60 @@ test("tenant lifecycle + seat rules + event flow + isolation", async () => {
     ctx.db.query(`DELETE FROM meter_events`),
     /append-only/,
   );
+});
+
+test("M1 stacking rule: chained events on one call_id telescope, no double-count", async () => {
+  const t = (
+    await app.inject({
+      method: "POST",
+      url: "/v1/tenants",
+      headers: ADMIN,
+      payload: { name: "stacking" },
+    })
+  ).json() as { tenant_id: string };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST",
+      url: "/v1/seats",
+      headers: { ...ADMIN, "x-tenant-id": t.tenant_id },
+      payload: { identity_type: "human", user_id: "sso|bob" },
+    })
+  ).json() as { seat_id: string };
+
+  // one underlying call, two stacked interventions (compress -> route):
+  // stage 2's counterfactual = stage 1's actual (the chain rule).
+  const callId = randomUUID();
+  const stage1 = { counterfactual_usd: 1.0, actual_usd: 0.6 }; // compress: avoids 0.4
+  const stage2 = { counterfactual_usd: 0.6, actual_usd: 0.25 }; // route: avoids 0.35
+  for (const [i, stage] of [stage1, stage2].entries()) {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      headers: { ...SEAT, "x-tenant-id": t.tenant_id },
+      payload: validEvent(seat_id, {
+        call_id: callId,
+        module: "reduce",
+        intervention_type: i === 0 ? "compress" : "route",
+        cost: {
+          ...stage,
+          avoided_usd: stage.counterfactual_usd - stage.actual_usd,
+          currency: "USD",
+          pricing_source: "provider_registry",
+          pricing_version: "test-snapshot",
+        },
+      }),
+    });
+    assert.equal(res.statusCode, 201);
+  }
+  const sum = (
+    await app.inject({
+      method: "GET",
+      url: "/v1/meter/summary",
+      headers: { ...SEAT, "x-tenant-id": t.tenant_id },
+    })
+  ).json() as { avoided_usd: number };
+  // telescoped: original counterfactual (1.0) - final actual (0.25) = 0.75
+  assert.ok(Math.abs(sum.avoided_usd - 0.75) < 1e-9);
 });
 
 test("object store: content-addressed + integrity", async () => {

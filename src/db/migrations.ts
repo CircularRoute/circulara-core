@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS assets (
 
 CREATE TABLE IF NOT EXISTS meter_events (
   event_id          uuid PRIMARY KEY,
+  call_id           uuid NOT NULL,           -- QA M1: per-underlying-call correlation
   schema_version    text NOT NULL,
   ts                timestamptz NOT NULL,
   seat_id           uuid NOT NULL REFERENCES seats(seat_id),
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS meter_events (
 );
 CREATE INDEX IF NOT EXISTS meter_events_ts   ON meter_events (ts);
 CREATE INDEX IF NOT EXISTS meter_events_seat ON meter_events (seat_id, ts);
+CREATE INDEX IF NOT EXISTS meter_events_call ON meter_events (call_id);
 
 -- Append-only: the meter's integrity depends on events never mutating (AD4).
 CREATE OR REPLACE FUNCTION reject_mutation() RETURNS trigger AS $$

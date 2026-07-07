@@ -27,12 +27,13 @@ export async function ingestEvent(
 
   await ctx.db.query(
     `INSERT INTO meter_events
-       (event_id, schema_version, ts, seat_id, module, intervention_type,
+       (event_id, call_id, schema_version, ts, seat_id, module, intervention_type,
         host, capture_path, avoided_usd, actual_usd, pricing_version,
         sourcing_rung, sourcing_spend_usd, payload)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       ev.event_id,
+      ev.call_id,
       ev.schema_version,
       ev.ts,
       ev.seat_id,
