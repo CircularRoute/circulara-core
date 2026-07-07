@@ -676,9 +676,59 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
     const r = await meterReport(ctx, month);
     const p = savingsPotential(r.observed_usd);
+    const { computeInvoice } = await import("../billing/billing.js");
+    const invoice = await computeInvoice(ctx, month);
     return reply
       .type("text/html")
-      .send(renderStatement(r, p, tenantQ(tenantId, q, month), month));
+      .send(renderStatement(r, p, tenantQ(tenantId, q, month), month, invoice.total_usd));
+  });
+
+  // ---- wave 8: per-seat billing, TEST MODE only (no live charges) ----
+  app.get("/v1/billing/invoice", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const q = req.query as { month?: string };
+    const month = q.month ?? new Date().toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month))
+      throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
+    const { computeInvoice } = await import("../billing/billing.js");
+    return computeInvoice(ctx, month);
+  });
+
+  app.put("/v1/billing/plan", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as { plan?: string; cycle?: string };
+    const { getBilling, setBilling, PLAN_PRICES } = await import("../billing/billing.js");
+    if (!b?.plan || !(b.plan in PLAN_PRICES))
+      return reply.status(400).send({ error: "plan must be observe|team|business|enterprise" });
+    const cycle = b.cycle === "annual" ? "annual" : "monthly";
+    const cur = await getBilling(ctx);
+    await setBilling(ctx, { ...cur, plan: b.plan as keyof typeof PLAN_PRICES, cycle });
+    return reply.status(204).send();
+  });
+
+  app.post("/v1/billing/redeem-early-adopter", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const { redeemEarlyAdopter } = await import("../billing/billing.js");
+    const res = await redeemEarlyAdopter(deps.control.controlDb(), ctx);
+    return reply.status(res.redeemed ? 200 : 409).send(res);
+  });
+
+  // checkout intent for the public pricing page (CTO wires the button)
+  app.post("/v1/billing/checkout-intent", async (req, reply) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as { plan?: string; cycle?: string };
+    const { checkoutIntent, PLAN_PRICES } = await import("../billing/billing.js");
+    if (!b?.plan || !(b.plan in PLAN_PRICES))
+      return reply.status(400).send({ error: "plan required" });
+    return checkoutIntent(
+      b.plan as keyof typeof PLAN_PRICES,
+      b.cycle === "annual" ? "annual" : "monthly",
+      ctx.tenantId,
+    );
   });
 
   // ---- wave 7: ESG-ready export (credible-transparent, D8) ----

@@ -97,6 +97,11 @@ export class ControlPlane {
     return res.rows[0] ?? null;
   }
 
+  /** Control-plane DB handle (global registries, e.g. early-adopter slots). */
+  controlDb(): PGlite {
+    return this.control;
+  }
+
   /** The only way to touch tenant data. */
   async contextFor(tenantId: string): Promise<TenantContext> {
     const rec = await this.getTenant(tenantId);

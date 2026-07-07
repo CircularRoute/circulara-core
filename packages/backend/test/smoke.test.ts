@@ -1953,3 +1953,94 @@ test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works
   assert.ok(st.body.includes("By user") && st.body.includes("By team") && st.body.includes("By module"));
   assert.ok(st.body.includes("esg-export"));
 });
+
+// ---------- wave 8 (billing test mode) ----------
+
+test("wave8 billing: idle unbilled, library NEVER metered, coupon math, first-10 cap", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "bill" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const month = "2026-07";
+
+  // two seats; only one emits events -> only one bills (idle unbilled, AD6)
+  const mkSeat = async (u: string) =>
+    ((await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: u },
+    })).json() as { seat_id: string }).seat_id;
+  const active = await mkSeat("sso|active");
+  await mkSeat("sso|idle");
+  await app.inject({
+    method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+    payload: validEvent(active, { ts: "2026-07-03T10:00:00Z" }),
+  });
+
+  // observe plan: $0 whatever happens
+  let inv = (
+    await app.inject({ method: "GET", url: `/v1/billing/invoice?month=${month}`, headers: { ...SEAT, ...th } })
+  ).json() as { active_seats: number; total_usd: number; mode: string };
+  assert.equal(inv.active_seats, 1);
+  assert.equal(inv.total_usd, 0);
+  assert.equal(inv.mode, "test");
+
+  // team annual: 1 active seat x $49
+  await app.inject({
+    method: "PUT", url: "/v1/billing/plan", headers: { ...ADMIN, ...th },
+    payload: { plan: "team", cycle: "annual" },
+  });
+  inv = (
+    await app.inject({ method: "GET", url: `/v1/billing/invoice?month=${month}`, headers: { ...SEAT, ...th } })
+  ).json() as { active_seats: number; total_usd: number; mode: string };
+  assert.equal(inv.total_usd, 49);
+
+  // LIBRARY IS NEVER METERED: capture assets + drive reuse hits -> invoice unchanged
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+  const spec = { asset_type: 2, source_checksum: "b".repeat(64), pipeline: "md", pipeline_version: "1" };
+  await app.inject({
+    method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+    payload: { spec, content: "clean corpus for the flywheel test", provenance: { producer: "org", source: "internal", build_method: "parse" } },
+  });
+  const inv2 = (
+    await app.inject({ method: "GET", url: `/v1/billing/invoice?month=${month}`, headers: { ...SEAT, ...th } })
+  ).json() as { total_usd: number; notes: string[] };
+  assert.equal(inv2.total_usd, 49); // capture changed nothing
+  assert.ok(inv2.notes.some((n) => n.includes("NEVER metered")));
+
+  // early-adopter: 30% off; second redemption for the same org refused
+  const redeem = await app.inject({
+    method: "POST", url: "/v1/billing/redeem-early-adopter", headers: { ...ADMIN, ...th },
+  });
+  assert.equal(redeem.statusCode, 200);
+  const inv3 = (
+    await app.inject({ method: "GET", url: `/v1/billing/invoice?month=${month}`, headers: { ...SEAT, ...th } })
+  ).json() as { total_usd: number; discount_usd: number; coupon: { code: string } };
+  assert.equal(inv3.coupon.code, "EARLY10");
+  assert.ok(Math.abs(inv3.discount_usd - 49 * 0.3) < 1e-9);
+  assert.ok(Math.abs(inv3.total_usd - 49 * 0.7) < 1e-9);
+  const again = await app.inject({
+    method: "POST", url: "/v1/billing/redeem-early-adopter", headers: { ...ADMIN, ...th },
+  });
+  assert.equal(again.statusCode, 409);
+
+  // checkout intent: test mode, no live charge path
+  const intent = (
+    await app.inject({
+      method: "POST", url: "/v1/billing/checkout-intent", headers: { ...SEAT, ...th },
+      payload: { plan: "business", cycle: "monthly" },
+    })
+  ).json() as { mode: string; price_per_seat_usd: number; note: string };
+  assert.equal(intent.mode, "test");
+  assert.equal(intent.price_per_seat_usd, 99);
+  assert.ok(intent.note.includes("no live charge"));
+
+  // statement fee line reflects the invoice
+  const st = await app.inject({
+    method: "GET",
+    url: `/dashboard/statement?tenant=${t.tenant_id}&token=dev-seat-token&month=${month}`,
+  });
+  assert.ok(st.body.includes("$34.30")); // 49 * 0.7
+});
