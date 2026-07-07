@@ -27,6 +27,10 @@ import { setProviderKey, listProviders, type Provider } from "../keys/providerKe
 import { getPolicy, setPolicy, DEFAULT_POLICY, type TenantPolicy } from "../engines/policy.js";
 import { controllerCheck, estTokens } from "../engines/controller.js";
 import { toolCacheLookup, toolCacheStore } from "../engines/recycle/toolcache.js";
+import { captureAsset } from "../engines/reuse/library.js";
+import { acquireAsset, type AcquireRequest, type SeatRef } from "../sourcing/acquire.js";
+import type { CommonsStore } from "../sourcing/commons.js";
+import type { FederatedIndex } from "../sourcing/catalogs.js";
 import { randomUUID } from "node:crypto";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
@@ -36,6 +40,8 @@ export interface AppDeps {
   objects: ObjectStore;
   auth: Authenticator;
   gateway: GatewayDeps;
+  commons: CommonsStore;
+  index: FederatedIndex;
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -193,6 +199,222 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       maxOutputTokens: b.max_output_tokens ?? 4096,
       seatId: b.seat_id,
     });
+  });
+
+  // ---- wave 5: the four-rung acquire loop + library capture + approvals ----
+  const seatRefFor = async (
+    ctx: Awaited<ReturnType<typeof tenantCtx>>,
+    seatId: string,
+  ): Promise<SeatRef> => {
+    const r = await ctx.db.query<{
+      identity_type: "human" | "named_agent";
+      user_id: string;
+      team_id: string | null;
+      agent_identity: string | null;
+    }>(
+      `SELECT identity_type, user_id, team_id, agent_identity FROM seats WHERE seat_id = $1 AND active`,
+      [seatId],
+    );
+    if (r.rows.length === 0)
+      throw Object.assign(new Error("unknown seat"), { statusCode: 422 });
+    return { seat_id: seatId, ...r.rows[0] };
+  };
+
+  app.post("/v1/acquire", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as { seat_id?: string } & AcquireRequest;
+    if (!b?.seat_id || !b?.spec || !b?.build_estimate)
+      throw Object.assign(new Error("seat_id, spec, build_estimate required"), {
+        statusCode: 400,
+      });
+    const seat = await seatRefFor(ctx, b.seat_id);
+    const policy = await getPolicy(ctx);
+    return acquireAsset(
+      ctx,
+      policy,
+      {
+        objects: deps.objects,
+        commons: deps.commons,
+        index: deps.index,
+        getPricing: deps.gateway.getPricing,
+        embedder: deps.gateway.embedder ?? null,
+      },
+      seat,
+      { spec: b.spec, description: b.description, constraints: b.constraints, build_estimate: b.build_estimate },
+    );
+  });
+
+  app.post("/v1/assets/capture", async (req, reply) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const b = req.body as {
+      spec?: AcquireRequest["spec"];
+      content?: string;
+      provenance?: { producer: string; source: string; build_method: string };
+      license?: { redistributable: boolean; spdx_or_terms: string | null };
+      parent_fp?: string | null;
+      price_usd?: number;
+      schema_json?: unknown;
+    };
+    if (!b?.spec || b?.content == null || !b?.provenance)
+      throw Object.assign(new Error("spec, content, provenance required"), {
+        statusCode: 400,
+      });
+    const policy = await getPolicy(ctx);
+    const res = await captureAsset(
+      ctx,
+      deps.objects,
+      policy,
+      {
+        spec: b.spec,
+        bytes: Buffer.from(b.content, "utf8"),
+        provenance: b.provenance,
+        license: b.license,
+        parent_fp: b.parent_fp,
+        price_usd: b.price_usd,
+        schema_json: b.schema_json,
+      },
+      deps.gateway.embedder ?? null,
+    );
+    return reply.status(res.captured ? 201 : 422).send(res);
+  });
+
+  // AD11: promotion of money is ALWAYS a named human. approver = required.
+  app.post("/v1/approvals/:proposalId/:decision", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const { proposalId, decision } = req.params as {
+      proposalId: string;
+      decision: string;
+    };
+    if (decision !== "approve" && decision !== "reject")
+      return reply.status(400).send({ error: "decision must be approve|reject" });
+    const b = req.body as { approver?: string };
+    if (!b?.approver)
+      return reply.status(400).send({ error: "approver (named human) required - no exceptions (AD11)" });
+    const row = await ctx.db.query<{
+      source: string; catalog_ref: string; price_usd: string;
+      billing_route: string; requested_by_seat: string; status: string;
+    }>(
+      `SELECT source, catalog_ref, price_usd::text, billing_route, requested_by_seat, status
+         FROM purchase_approvals WHERE proposal_id = $1`,
+      [proposalId],
+    );
+    if (row.rows.length === 0) return reply.status(404).send({ error: "unknown proposal" });
+    if (row.rows[0].status !== "pending")
+      return reply.status(409).send({ error: `already ${row.rows[0].status}` });
+    const p = row.rows[0];
+    const status = decision === "approve" ? "approved" : "rejected";
+    await ctx.db.query(
+      `UPDATE purchase_approvals SET status = $1, approver = $2, decided_at = now() WHERE proposal_id = $3`,
+      [status, b.approver, proposalId],
+    );
+    const seat = await seatRefFor(ctx, p.requested_by_seat);
+    const pricing = deps.gateway.getPricing();
+    await ingestEvent(ctx, {
+      event_id: randomUUID(),
+      call_id: randomUUID(),
+      schema_version: "1.1",
+      ts: new Date().toISOString(),
+      seat_id: seat.seat_id,
+      identity_type: seat.identity_type,
+      user_id: seat.user_id,
+      team_id: seat.team_id,
+      agent_identity: seat.agent_identity,
+      host: "other",
+      capture_path: "tool",
+      session_id: null,
+      module: "reuse",
+      intervention_type: decision === "approve" ? "purchase_approved" : "purchase_rejected",
+      model_requested: null,
+      model_used: null,
+      tokens: { input_counterfactual: 0, output_counterfactual: 0, input_actual: 0, output_actual: 0 },
+      cost: {
+        counterfactual_usd: 0,
+        actual_usd: 0,
+        avoided_usd: 0,
+        currency: "USD",
+        pricing_source: "meter",
+        pricing_version: pricing?.pricing_version ?? "unpriced",
+      },
+      energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
+      carbon: {
+        avoided_co2e_g: 0, grid_intensity_g_per_kwh: 400, pue: 1.2, region: null,
+        method: "EcoLogits-class", confidence: "Estimated",
+      },
+      methodology_version: "esg-v1",
+      asset_ref: null,
+      cache_ref: null,
+      sourcing: {
+        rung: 4,
+        source: p.source as "adx" | "snowflake",
+        catalog_ref: p.catalog_ref,
+        spend_usd: decision === "approve" ? Number(p.price_usd) : 0, // spend on its own line, never netted (AD12)
+        billing_route: p.billing_route as "customer_aws" | "customer_snowflake",
+        approval_ref: proposalId,
+        license: { redistributable: false, spdx_or_terms: null, parent_fp: null },
+        commons_captured: false,
+      },
+      catalog_reserved: null,
+    });
+    return {
+      proposal_id: proposalId,
+      status,
+      approver: b.approver,
+      // router-not-merchant (D15): the customer's own account transacts
+      next_step:
+        decision === "approve"
+          ? `subscribe via your own ${p.billing_route === "customer_aws" ? "AWS (Data Exchange)" : "Snowflake"} account: ${p.catalog_ref}. Circulara records the reference and the itemized spend; it never resells data.`
+          : "no purchase; the request falls back to build",
+    };
+  });
+
+  app.get("/v1/approvals", async (req) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const r = await ctx.db.query(
+      `SELECT proposal_id, source, catalog_ref, title, price_usd::text, billing_route,
+              build_cost_usd::text, status, approver, created_at, decided_at
+         FROM purchase_approvals ORDER BY created_at DESC`,
+    );
+    return { proposals: r.rows };
+  });
+
+  // AD12/D15: the unified, ITEMIZED external-data-spend report
+  app.get("/v1/meter/external-spend", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const r = await ctx.db.query<{
+      ts: string; intervention_type: string; spend: string; payload: {
+        sourcing?: { source?: string; catalog_ref?: string; approval_ref?: string; billing_route?: string };
+        user_id?: string;
+      };
+    }>(
+      `SELECT ts, intervention_type, coalesce(sourcing_spend_usd,0)::text AS spend, payload
+         FROM meter_events WHERE sourcing_rung IS NOT NULL ORDER BY ts DESC`,
+    );
+    const items = r.rows.map((x) => ({
+      ts: x.ts,
+      type: x.intervention_type,
+      source: x.payload.sourcing?.source ?? null,
+      catalog_ref: x.payload.sourcing?.catalog_ref ?? null,
+      approval_ref: x.payload.sourcing?.approval_ref ?? null,
+      billing_route: x.payload.sourcing?.billing_route ?? null,
+      requested_by: x.payload.user_id ?? null,
+      spend_usd: Number(x.spend),
+    }));
+    return {
+      total_spend_usd: items.reduce((s, i) => s + i.spend_usd, 0),
+      note: "external purchases transact on YOUR accounts (router, not merchant - D15); reported separately, never netted into savings (AD12)",
+      items,
+    };
+  });
+
+  // wave 5: Commons stats (network-effect metrics, §14)
+  app.get("/v1/commons/stats", async (req) => {
+    await auth(req);
+    return deps.commons.stats();
   });
 
   // ---- wave 4: deterministic tool-call cache (hook + tool path) ----

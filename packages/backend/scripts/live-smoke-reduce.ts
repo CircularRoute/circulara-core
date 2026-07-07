@@ -17,6 +17,8 @@ import { buildApp } from "../src/api/server.js";
 import { Authenticator } from "../src/auth/auth.js";
 import { parseKek } from "../src/keys/envelope.js";
 import { PricingRegistry } from "../src/registry/pricing.js";
+import { CommonsStore } from "../src/sourcing/commons.js";
+import { FederatedIndex, launchCatalogs } from "../src/sourcing/catalogs.js";
 
 const cfg = loadConfig();
 const anthropicKey = loadSecret(cfg, "ANTHROPIC_API_KEY");
@@ -35,6 +37,8 @@ const app = buildApp({
   objects: new FsObjectStore(join(tmp, "objects")),
   auth: new Authenticator({ mode: "dev", agentTokenSecret: randomBytes(32) }),
   gateway: { kek: parseKek(masterKey), getPricing: () => registry.getApproved() },
+  commons: await (async () => { const c = new CommonsStore(tmp, true); await c.init(); return c; })(),
+  index: new FederatedIndex(launchCatalogs()),
 });
 
 const ADMIN = { authorization: "Bearer dev-admin-token" };

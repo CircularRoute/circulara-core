@@ -122,6 +122,23 @@ CREATE TABLE IF NOT EXISTS response_cache (
 CREATE INDEX IF NOT EXISTS response_cache_exp   ON response_cache (expires_at);
 CREATE INDEX IF NOT EXISTS response_cache_scope ON response_cache (scope);
 
+-- Wave 5: rung-4 purchase approvals (AD11: named human, no auto-purchase).
+CREATE TABLE IF NOT EXISTS purchase_approvals (
+  proposal_id      uuid PRIMARY KEY,
+  source           text NOT NULL,
+  catalog_ref      text NOT NULL,
+  title            text NOT NULL,
+  price_usd        numeric(14,6) NOT NULL,
+  billing_route    text NOT NULL,             -- customer_aws | customer_snowflake
+  build_cost_usd   numeric(14,6) NOT NULL,    -- the buy-or-build math shown to the approver
+  requested_by_seat uuid NOT NULL,
+  status           text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','approved','rejected')),
+  approver         text,                      -- named human (AD11: logged, no exceptions)
+  decided_at       timestamptz,
+  created_at       timestamptz NOT NULL DEFAULT now()
+);
+
 -- Append-only: the meter's integrity depends on events never mutating (AD4).
 CREATE OR REPLACE FUNCTION reject_mutation() RETURNS trigger AS $$
 BEGIN

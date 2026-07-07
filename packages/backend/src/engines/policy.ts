@@ -37,6 +37,14 @@ export interface TenantPolicy {
       max_history_messages: number; // conversation-history thresholding (§6.8)
     };
   };
+  // Wave 5 - Reuse library (§6.3-6.6).
+  reuse: {
+    capture_enabled: boolean; // DEFAULT OFF (§6.6): only capture what an admin enabled
+    authorized_asset_types: number[]; // v1 launch classes 1-3
+    buy_threshold: number; // <= 0.70 HARD cap (§6.4): only reuse obvious wins
+    semantic_enabled: boolean; // fuzzy fingerprint fallback: OPT-IN
+    semantic_threshold: number; // >= 0.92 floor, default 0.95
+  };
 }
 
 export const DEFAULT_POLICY: TenantPolicy = {
@@ -61,6 +69,13 @@ export const DEFAULT_POLICY: TenantPolicy = {
       semantic_threshold: 0.95,
       max_history_messages: 2, // single-turn only by default
     },
+  },
+  reuse: {
+    capture_enabled: false, // DEFAULT OFF (§6.6) - the standing rule
+    authorized_asset_types: [1, 2, 3],
+    buy_threshold: 0.7,
+    semantic_enabled: false,
+    semantic_threshold: 0.95,
   },
 };
 
@@ -87,9 +102,14 @@ export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
       },
     },
   };
+  merged.reuse = { ...DEFAULT_POLICY.reuse, ...(stored.reuse ?? {}) };
   // hard floor (§6.8): semantic threshold can never be configured below 0.92
   if (merged.recycle.response.semantic_threshold < 0.92)
     merged.recycle.response.semantic_threshold = 0.92;
+  if (merged.reuse.semantic_threshold < 0.92)
+    merged.reuse.semantic_threshold = 0.92;
+  // hard cap (§6.4): buy_threshold can never exceed 0.70
+  if (merged.reuse.buy_threshold > 0.7) merged.reuse.buy_threshold = 0.7;
   return merged;
 }
 

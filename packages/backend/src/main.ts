@@ -42,6 +42,13 @@ const registry = new PricingRegistry(
 
 const control = new ControlPlane(cfg.dataDir);
 await control.init();
+// wave 5: shared Commons (multi-tenant by design, license-gated; D14/AD8) +
+// federated index over the launch catalogs (demand-pulled fixtures in dev)
+const { CommonsStore } = await import("./sourcing/commons.js");
+const { FederatedIndex, launchCatalogs } = await import("./sourcing/catalogs.js");
+const commons = new CommonsStore(cfg.dataDir);
+await commons.init();
+const index = new FederatedIndex(launchCatalogs());
 const app = buildApp({
   control,
   objects: new FsObjectStore(join(cfg.dataDir, "objects")),
@@ -50,6 +57,8 @@ const app = buildApp({
     kek: parseKek(masterKeyHex),
     getPricing: () => registry.getApproved(),
   },
+  commons,
+  index,
 });
 await app.listen({ port: cfg.port, host: "127.0.0.1" });
 console.log(

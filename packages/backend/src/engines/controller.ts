@@ -25,7 +25,7 @@ export const estTokens = (chars: number) => Math.ceil(chars / 4);
 
 export interface LadderRung {
   rung: string;
-  status: "checked" | "coming_soon";
+  status: "checked" | "available" | "coming_soon";
   note: string;
 }
 
@@ -47,8 +47,8 @@ function ladder(reason: string | null): LadderRung[] {
   return [
     {
       rung: "org_library",
-      status: "coming_soon",
-      note: "Soon: Circulara will first check whether an equivalent asset already exists in your library before this call spends anything.",
+      status: "available", // wave 5: the ladder is LIVE via POST /v1/acquire
+      note: "Before building anything expensive, run it through POST /v1/acquire - Circulara checks your org library, the Circulara Commons, and free/paid certified catalogs first (four-rung buy-or-build ladder).",
     },
     {
       rung: "budget_policy",

@@ -41,12 +41,45 @@ export const TEST_PRICING: PricingSnapshot = {
 let control: ControlPlane;
 let app: ReturnType<typeof buildApp>;
 let tmp: string;
+let commons: import("../src/sourcing/commons.js").CommonsStore;
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "circulara-test-"));
   control = new ControlPlane(tmp, /* inMemory */ true);
   await control.init();
+  const { CommonsStore } = await import("../src/sourcing/commons.js");
+  const { FederatedIndex, launchCatalogs } = await import("../src/sourcing/catalogs.js");
+  commons = new CommonsStore(tmp, true);
+  await commons.init();
+  const index = new FederatedIndex(
+    launchCatalogs({
+      hf_hub: [
+        {
+          source: "hf_hub", tier: "free", native_id: "hf/wiki-qa-open",
+          title: "Wiki QA open dataset", description: "openly licensed qa dataset for wiki entities",
+          license: { redistributable: true, spdx_or_terms: "CC-BY-4.0" },
+          price_usd: 0, billing_route: "none", freshness: "static", schema_hint: null,
+        },
+        {
+          source: "hf_hub", tier: "free", native_id: "hf/private-ish",
+          title: "Unknown license corpus", description: "corpus with unknown licensing terms",
+          license: { redistributable: false, spdx_or_terms: null },
+          price_usd: 0, billing_route: "none", freshness: "static", schema_hint: null,
+        },
+      ],
+      adx: [
+        {
+          source: "adx", tier: "paid", native_id: "adx/firmo-500",
+          title: "Firmographics 500", description: "premium firmographics dataset for enrichment",
+          license: { redistributable: false, spdx_or_terms: "DSA" },
+          price_usd: 250, billing_route: "customer_aws", freshness: "monthly", schema_hint: null,
+        },
+      ],
+    }),
+  );
   app = buildApp({
+    commons,
+    index,
     control,
     objects: new FsObjectStore(join(tmp, "objects")),
     auth: new Authenticator({
@@ -966,7 +999,7 @@ test("wave3 Cost-Controller: allowlist + budget block with hierarchy ladder, avo
   ).json() as { action: string; ladder: { rung: string; status: string }[] };
   assert.equal(chk.action, "block");
   assert.equal(chk.ladder[0].rung, "org_library");
-  assert.equal(chk.ladder[0].status, "coming_soon");
+  assert.equal(chk.ladder[0].status, "available"); // wave 5: the ladder went live
 
   // gateway path: blocked BEFORE forward (402), avoided cost booked
   const gw = await app.inject({
@@ -1369,4 +1402,318 @@ test("wave4 semantic layer: gated hit with fake embedder; sub-threshold refuses"
   // no embedder configured -> semantic layer silently unavailable
   const noEmb = await responseCacheLookup(ctx, pol, "seat-1", paraphrase, null);
   assert.equal(noEmb, null);
+});
+
+// ---------- wave 5 (Reuse library + sourcing network) ----------
+
+test("wave5 fingerprints: deterministic, config-sensitive (AD5 slice)", async () => {
+  const { exactFingerprint } = await import("../src/engines/reuse/fingerprint.js");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const emb = (over: Record<string, unknown> = {}): any => ({
+    asset_type: 1 as const, corpus_id: "repo-x", corpus_version: "v3",
+    chunking_scheme: "fixed-512", embedding_model_id: "text-embedding-3-small",
+    dimensions: 1536, normalization: "l2", ...over,
+  });
+  assert.equal(exactFingerprint(emb()), exactFingerprint(emb())); // same config -> same fp
+  assert.notEqual(exactFingerprint(emb()), exactFingerprint(emb({ embedding_model_id: "other" })));
+  assert.notEqual(exactFingerprint(emb()), exactFingerprint(emb({ chunking_scheme: "fixed-256" })));
+  // tool results: freshness window is IN the key
+  const tool = (now: Date) =>
+    exactFingerprint(
+      { asset_type: 3, canonical_source_id: "sql", params: { q: 1 }, schema_version: "s1", freshness_bucket: "daily" },
+      now,
+    );
+  assert.notEqual(tool(new Date("2026-07-07T01:00:00Z")), tool(new Date("2026-07-08T01:00:00Z")));
+});
+
+test("wave5 capture safety: default-OFF + secret scanner HARD BLOCK", async () => {
+  const { scanForSecrets } = await import("../src/engines/reuse/scanner.js");
+  assert.equal(scanForSecrets("plain prose about recycling assets").blocked, false);
+  for (const bad of [
+    "config: AKIAIOSFODNN7EXAMPLE is the key",
+    "-----BEGIN RSA PRIVATE KEY-----\nabc",
+    'api_key = "supersecretvalue1234567890abcd"',
+    "postgres://admin:hunter2pass@db.internal:5432/prod",
+  ]) {
+    assert.equal(scanForSecrets(bad).blocked, true, bad.slice(0, 30));
+  }
+
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "cap5" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const spec = {
+    asset_type: 2, source_checksum: "c".repeat(64), pipeline: "pdf-to-md", pipeline_version: "1",
+  };
+  const capture = (content: string) =>
+    app.inject({
+      method: "POST", url: "/v1/assets/capture",
+      headers: { ...SEAT, ...th },
+      payload: { spec, content, provenance: { producer: "sso|x", source: "upload", build_method: "parse" } },
+    });
+
+  // default OFF (§6.6)
+  const off = await capture("clean parsed document text");
+  assert.equal(off.statusCode, 422);
+  assert.ok((off.json() as { reason: string }).reason.includes("OFF"));
+
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+  // secrets HARD BLOCK even with capture on
+  const blocked = await capture('parsed doc containing token = "abcdefghijklmnop1234567890XYZ"');
+  assert.equal(blocked.statusCode, 422);
+  assert.ok((blocked.json() as { reason: string }).reason.includes("HARD BLOCK"));
+  // clean content captures
+  const ok = await capture("clean parsed document text");
+  assert.equal(ok.statusCode, 201);
+  assert.ok((ok.json() as { exact_fp: string }).exact_fp.length === 64);
+});
+
+test("wave5 acquire rung 1: library reuse hit books avoided; gates block stale (AD5 slice)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "rung1" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|r1" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+  const spec = {
+    asset_type: 1, corpus_id: "monorepo", corpus_version: "v9", chunking_scheme: "fixed-512",
+    embedding_model_id: "text-embedding-3-small", dimensions: 1536, normalization: "l2",
+  };
+  await app.inject({
+    method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+    payload: { spec, content: "embedding index bytes v9", provenance: { producer: "sso|r1", source: "build", build_method: "embed" } },
+  });
+
+  // acquire the same spec: rung-1 exact hit; avoided = full build estimate
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id, spec,
+        build_estimate: { expected_input_tokens: 2_000_000, model: "claude-haiku-4-5-20251001" },
+      },
+    })
+  ).json() as { verdict: string; rung: number; layer: string; avoided_usd: number };
+  assert.equal(acq.verdict, "reuse");
+  assert.equal(acq.rung, 1);
+  assert.equal(acq.layer, "exact");
+  // 2M tokens x 1e-6 = $2 x 1.15 failure premium = $2.30 avoided
+  assert.ok(Math.abs(acq.avoided_usd - 2.3) < 1e-9);
+
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as { avoided_usd: number; by_module: { key: string; avoided_usd: number }[] };
+  assert.ok(Math.abs(report.avoided_usd - 2.3) < 1e-9);
+  assert.ok(report.by_module.find((m) => m.key === "reuse"));
+
+  // GATES: a TTL-expired asset is NEVER served (freshness gate) -> falls to build
+  const { libraryLookup } = await import("../src/engines/reuse/library.js");
+  const { getPolicy } = await import("../src/engines/policy.js");
+  const ctx = await control.contextFor(t.tenant_id);
+  await ctx.db.query(
+    `UPDATE assets SET ttl_seconds = 1, created_at = now() - interval '1 hour'`,
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stale = await libraryLookup(ctx, await getPolicy(ctx), spec as any, {}, null);
+  assert.equal(stale, null); // exact match exists but gates reject: never serve stale
+});
+
+test("wave5 rungs 2+3: Commons demand-seeding (D18) + license HARD gate (D14)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "rung23" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|r23" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+
+  const before = await commons.stats();
+
+  // rung 3: no library/commons hit -> free catalog pull (redistributable)
+  const spec = {
+    asset_type: 2, source_checksum: "d".repeat(64), pipeline: "hf-download", pipeline_version: "1",
+  };
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id, spec, description: "openly licensed qa dataset",
+        build_estimate: { expected_input_tokens: 500_000, model: "claude-haiku-4-5-20251001" },
+      },
+    })
+  ).json() as { verdict: string; rung: number; source: string; exact_fp: string };
+  assert.equal(acq.verdict, "reuse");
+  assert.equal(acq.rung, 3);
+  assert.equal(acq.source, "hf_hub");
+
+  // D18 demand-seeding: THAT pull (redistributable) seeded the Commons
+  const after = await commons.stats();
+  assert.equal(after.assets, before.assets + 1);
+
+  // rung 2: a SECOND tenant acquiring the same spec hits the COMMONS
+  const t2 = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "rung2b" } })
+  ).json() as { tenant_id: string };
+  const th2 = { "x-tenant-id": t2.tenant_id };
+  const seat2 = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th2 },
+      payload: { identity_type: "human", user_id: "sso|r2b" },
+    })
+  ).json() as { seat_id: string };
+  const acq2 = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th2 },
+      payload: {
+        seat_id: seat2.seat_id, spec, description: "openly licensed qa dataset",
+        build_estimate: { expected_input_tokens: 500_000, model: "claude-haiku-4-5-20251001" },
+      },
+    })
+  ).json() as { verdict: string; rung: number; source: string };
+  assert.equal(acq2.verdict, "reuse");
+  assert.equal(acq2.rung, 2);
+  assert.equal(acq2.source, "commons");
+
+  // D14 HARD gate: non-redistributable pull NEVER pools
+  const specBad = {
+    asset_type: 2, source_checksum: "e".repeat(64), pipeline: "hf-download", pipeline_version: "1",
+  };
+  const acqBad = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id, spec: specBad, description: "corpus with unknown licensing terms",
+        build_estimate: { expected_input_tokens: 500_000, model: "claude-haiku-4-5-20251001" },
+      },
+    })
+  ).json() as { verdict: string; rung: number };
+  assert.equal(acqBad.rung, 3); // served to THIS tenant fine...
+  const afterBad = await commons.stats();
+  assert.equal(afterBad.assets, after.assets); // ...but the Commons did NOT grow
+
+  // direct admit with unknown license also refused (no override path)
+  const refuse = await commons.admit({
+    exact_fp: "f".repeat(64), asset_type: 2, description: "x", source: "hf_hub",
+    catalog_ref: null, license: { redistributable: false, spdx_or_terms: null },
+    license_evidence: null, bytes: Buffer.from("x"), tenantId: t.tenant_id,
+  });
+  assert.equal(refuse.admitted, false);
+});
+
+test("wave5 rung 4: paid catalogs propose, named human approves, spend itemized (D15/AD11/AD12)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "rung4" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|r4" },
+    })
+  ).json() as { seat_id: string };
+
+  // paid-only match, build cost high enough to pass the cost gate
+  const spec = {
+    asset_type: 3, canonical_source_id: "enrich-api", params: { seg: "b2b" },
+    schema_version: "s1", freshness_bucket: "static",
+  };
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id, spec, description: "premium firmographics dataset",
+        build_estimate: { external_fees_usd: 2000 }, // building would cost $2300 w/ premium
+      },
+    })
+  ).json() as { verdict: string; rung: number; proposal_id: string; entry: { price_usd: number } };
+  assert.equal(acq.verdict, "proposal"); // NEVER auto-purchases
+  assert.equal(acq.rung, 4);
+  assert.equal(acq.entry.price_usd, 250);
+
+  // approval REQUIRES a named human
+  const noName = await app.inject({
+    method: "POST", url: `/v1/approvals/${acq.proposal_id}/approve`,
+    headers: { ...ADMIN, ...th }, payload: {},
+  });
+  assert.equal(noName.statusCode, 400);
+
+  const approved = (
+    await app.inject({
+      method: "POST", url: `/v1/approvals/${acq.proposal_id}/approve`,
+      headers: { ...ADMIN, ...th }, payload: { approver: "Rashad (founder)" },
+    })
+  ).json() as { status: string; next_step: string };
+  assert.equal(approved.status, "approved");
+  assert.ok(approved.next_step.includes("your own AWS")); // router, not merchant
+
+  // double-decide refused
+  const again = await app.inject({
+    method: "POST", url: `/v1/approvals/${acq.proposal_id}/approve`,
+    headers: { ...ADMIN, ...th }, payload: { approver: "x" },
+  });
+  assert.equal(again.statusCode, 409);
+
+  // AD12: spend on its own line, never netted; itemized report shows it
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as { external_spend_usd: number; avoided_usd: number };
+  assert.equal(report.external_spend_usd, 250);
+  assert.equal(report.avoided_usd, 0); // proposal+approval booked no fake savings
+
+  const spend = (
+    await app.inject({ method: "GET", url: "/v1/meter/external-spend", headers: { ...SEAT, ...th } })
+  ).json() as { total_spend_usd: number; items: { type: string; approval_ref: string | null }[] };
+  assert.equal(spend.total_spend_usd, 250);
+  assert.ok(spend.items.some((i) => i.type === "purchase_approved" && i.approval_ref === acq.proposal_id));
+});
+
+test("wave5 buy-or-build correctness: threshold capped at 0.70; expensive reuse -> build", async () => {
+  const { getPolicy, setPolicy, DEFAULT_POLICY } = await import("../src/engines/policy.js");
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "bob" } })
+  ).json() as { tenant_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  const pol = structuredClone(DEFAULT_POLICY);
+  pol.reuse.buy_threshold = 0.99; // config attempt above the cap
+  await setPolicy(ctx, pol);
+  assert.equal((await getPolicy(ctx)).reuse.buy_threshold, 0.7); // §6.4 hard cap
+
+  // paid option ($250) vs cheap build ($100): 250 > 100*0.7 -> BUILD, never buy
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|bob" },
+    })
+  ).json() as { seat_id: string };
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id,
+        spec: { asset_type: 3, canonical_source_id: "enrich-api", params: { seg: "smb" }, schema_version: "s1", freshness_bucket: "static" },
+        description: "premium firmographics dataset",
+        build_estimate: { external_fees_usd: 87 }, // ~$100 with premium
+      },
+    })
+  ).json() as { verdict: string };
+  assert.equal(acq.verdict, "build"); // reuse must be an OBVIOUS win or nothing
 });
