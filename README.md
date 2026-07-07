@@ -1,9 +1,18 @@
 # circulara-core
 
-Circulara Observe tier: per-tenant backend + MCP plugin. Sprints 1-2: WS0 (scaffold),
-WS6 (pricing registry), WS1 (MCP plugin), WS2 (auth + BYO keys + gateway).
+Circulara Observe tier: per-tenant backend + MCP plugin. Sprints 1-3: WS0 (scaffold),
+WS6 (pricing registry), WS1 (MCP plugin), WS2 (auth + BYO keys + gateway), WS3
+(telemetry pipeline: normalize -> re-price -> append; free-tier cap; OpenAI-format
+gateway for Cursor-class hosts), WS4 (meter compute: registry pricing, energy/CO2e
+ranges with confidence labels, per user/team/module/month report).
 Architecture: /outputs/reports/architecture_v1.md (AD1-AD6, rev 2026-07-07) + the
 sourcing addendum (AD7-AD12).
+
+**Pricing placement:** the meter owns money. All three capture paths (hook, tool,
+gateway) deliver tokens + model; pricing happens ONCE in the WS3/WS4 pipeline from the
+approved registry snapshot. Client-submitted observe events are re-priced server-side;
+client cost is a hint, never the booked number. Engine-computed events (reuse/sourcing,
+waves 3+) carry their own math and are born meter-priced in-process.
 
 ## Workspace layout
 

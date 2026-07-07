@@ -13,7 +13,10 @@ import {
   type SeatInput,
   type Role,
 } from "../auth/auth.js";
-import { ingestEvent, meterSummary } from "../meter/meter.js";
+import { meterSummary } from "../meter/meter.js";
+import { meterReport } from "../meter/report.js";
+import { normalizeAndAppend } from "../pipeline/normalize.js";
+import { interventionEventSchema } from "@circulara/schema";
 import { setProviderKey, listProviders, type Provider } from "../keys/providerKeys.js";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
@@ -140,11 +143,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return { configured: await listProviders(ctx) }; // names only, never values
   });
 
-  // ---- meter ----
+  // ---- meter (WS3 pipeline: validate -> normalize/re-price -> append) ----
   app.post("/v1/events", async (req, reply) => {
     await auth(req);
     const ctx = await tenantCtx(req);
-    const res = await ingestEvent(ctx, req.body);
+    const ev = interventionEventSchema.parse(req.body);
+    const res = await normalizeAndAppend(ctx, { getPricing: deps.gateway.getPricing }, ev);
     return reply.status(201).send(res);
   });
 
@@ -154,19 +158,44 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return meterSummary(ctx);
   });
 
-  // ---- WS2: gateway metering mode (AD3 path B). Auth = per-seat credential,
-  // NOT bearer: the host sends the credential as its x-api-key. ----
+  // WS4: attribution report (per user/team/module/month; energy+CO2e ranges)
+  app.get("/v1/meter/report", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const month = (req.query as { month?: string }).month;
+    if (month && !/^\d{4}-\d{2}$/.test(month))
+      throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
+    return meterReport(ctx, month);
+  });
+
+  // ---- gateway metering mode (AD3 path B). Auth = per-seat credential. ----
+  const credentialFrom = (req: FastifyRequest) =>
+    (req.headers["x-api-key"] as string | undefined) ??
+    (req.headers.authorization?.startsWith("Bearer ")
+      ? req.headers.authorization.slice(7)
+      : undefined);
+
   app.post("/gateway/anthropic/v1/messages", async (req, reply) => {
     const ctx = await tenantCtx(req);
-    const credential =
-      (req.headers["x-api-key"] as string | undefined) ??
-      (req.headers.authorization?.startsWith("Bearer ")
-        ? req.headers.authorization.slice(7)
-        : undefined);
     const res = await handleGatewayMessage(
       ctx,
       deps.gateway,
-      credential,
+      "anthropic",
+      credentialFrom(req),
+      req.body as Record<string, unknown>,
+      req.headers as Record<string, string>,
+    );
+    return reply.status(res.status).send(res.json);
+  });
+
+  // WS3: OpenAI-format endpoint for Cursor-class hosts (same pipeline)
+  app.post("/gateway/openai/v1/chat/completions", async (req, reply) => {
+    const ctx = await tenantCtx(req);
+    const res = await handleGatewayMessage(
+      ctx,
+      deps.gateway,
+      "openai",
+      credentialFrom(req),
       req.body as Record<string, unknown>,
       req.headers as Record<string, string>,
     );

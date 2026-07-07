@@ -1,32 +1,35 @@
 /**
- * WS2 - gateway metering mode (AD3 path B) with per-seat attribution (QA M2).
+ * WS2/WS3 - gateway metering mode (AD3 path B) with per-seat attribution (M2).
  *
- * The host points its Anthropic-compatible base_url at
- *   POST /gateway/anthropic/v1/messages
- * and sends its PER-SEAT Circulara credential as the x-api-key. We map
+ * Two host-format endpoints, one pipeline:
+ *   POST /gateway/anthropic/v1/messages          (Anthropic format; x-api-key)
+ *   POST /gateway/openai/v1/chat/completions     (OpenAI format, Cursor-class
+ *                                                 hosts; Authorization: Bearer)
+ * The credential the host sends is the PER-SEAT Circulara credential. We map
  * credential -> seat_id, load the tenant's REAL provider key (envelope-
- * decrypted, in memory only), forward the call, meter real token usage from
- * the response, and emit an observe event priced from the approved registry
- * snapshot. The provider key never reaches the client; the credential never
- * reaches the provider.
+ * decrypted, memory only), forward, and hand the observed usage to the WS3
+ * pipeline (recordCapture) - which prices it from the approved registry
+ * snapshot (WS4). Gateways do NOT price; the meter owns money (sprint-3
+ * pricing-placement decision, see meter/compute.ts).
  *
  * Disclosure (QA m6): in this mode prompts/completions transit the customer's
  * own per-tenant backend. Stated in architecture_v1.md AD3.
  */
-import { randomUUID } from "node:crypto";
 import type { TenantContext } from "../db/tenancy.js";
 import { seatForCredential } from "../auth/auth.js";
-import { getProviderKey } from "../keys/providerKeys.js";
-import { ingestEvent } from "../meter/meter.js";
+import { getProviderKey, type Provider } from "../keys/providerKeys.js";
+import { recordCapture, type PipelineDeps } from "../pipeline/normalize.js";
 import type { PricingSnapshot } from "../registry/pricing.js";
 
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+export const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
 export interface GatewayDeps {
   kek: Buffer;
   getPricing: () => PricingSnapshot | null;
   /** test seam: replaces the real provider call */
   forward?: (
+    url: string,
     body: unknown,
     providerKey: string,
     headers: Record<string, string>,
@@ -34,79 +37,94 @@ export interface GatewayDeps {
 }
 
 async function defaultForward(
+  url: string,
   body: unknown,
   providerKey: string,
   headers: Record<string, string>,
 ): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(ANTHROPIC_URL, {
+  const isAnthropic = url === ANTHROPIC_URL;
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": providerKey,
-      "anthropic-version": headers["anthropic-version"] ?? "2023-06-01",
-    },
+    headers: isAnthropic
+      ? {
+          "content-type": "application/json",
+          "x-api-key": providerKey,
+          "anthropic-version": headers["anthropic-version"] ?? "2023-06-01",
+        }
+      : {
+          "content-type": "application/json",
+          authorization: `Bearer ${providerKey}`,
+        },
     body: JSON.stringify(body),
   });
   return { status: res.status, json: await res.json() };
 }
 
-function priceUsage(
-  pricing: PricingSnapshot | null,
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-): { usd: number; pricingVersion: string } {
-  const entry =
-    pricing?.models[model] ??
-    pricing?.models[`anthropic/${model}`] ??
-    null;
-  if (!entry) return { usd: 0, pricingVersion: pricing?.pricing_version ?? "unpriced" };
-  return {
-    usd:
-      inputTokens * entry.input_cost_per_token +
-      outputTokens * entry.output_cost_per_token,
-    pricingVersion: pricing!.pricing_version,
+type Format = "anthropic" | "openai";
+
+const FORMAT_CONFIG: Record<
+  Format,
+  { url: string; provider: Provider; host: "cursor" | "other" }
+> = {
+  anthropic: { url: ANTHROPIC_URL, provider: "anthropic", host: "other" },
+  // OpenAI format is what Cursor-class hosts speak; attribute host accordingly
+  openai: { url: OPENAI_URL, provider: "openai", host: "cursor" },
+};
+
+/** Extract input/output token usage from either response format. */
+function usageFrom(format: Format, json: unknown): { input: number; output: number } | null {
+  const j = json as {
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
   };
+  if (!j?.usage) return null;
+  const input =
+    format === "anthropic" ? j.usage.input_tokens : j.usage.prompt_tokens;
+  const output =
+    format === "anthropic" ? j.usage.output_tokens : j.usage.completion_tokens;
+  if (input == null && output == null) return null;
+  return { input: input ?? 0, output: output ?? 0 };
 }
 
 export async function handleGatewayMessage(
   ctx: TenantContext,
   deps: GatewayDeps,
+  format: Format,
   credential: string | undefined,
   body: Record<string, unknown>,
   headers: Record<string, string>,
 ): Promise<{ status: number; json: unknown }> {
+  const fc = FORMAT_CONFIG[format];
+
   // M2: credential -> seat. No seat, no service.
   if (!credential)
-    return { status: 401, json: { error: "missing x-api-key (per-seat gateway credential)" } };
+    return {
+      status: 401,
+      json: { error: "missing per-seat gateway credential (x-api-key or Authorization: Bearer)" },
+    };
   const seatId = await seatForCredential(ctx, credential);
   if (!seatId)
     return { status: 401, json: { error: "unknown or inactive gateway credential" } };
 
-  const providerKey = await getProviderKey(ctx, deps.kek, "anthropic");
+  const providerKey = await getProviderKey(ctx, deps.kek, fc.provider);
   if (!providerKey)
     return {
       status: 503,
-      json: { error: "no anthropic provider key configured for this tenant (BYO keys, D4)" },
+      json: {
+        error: `no ${fc.provider} provider key configured for this tenant (BYO keys, D4)`,
+      },
     };
 
   const forward = deps.forward ?? defaultForward;
-  const res = await forward(body, providerKey, headers);
+  const res = await forward(fc.url, body, providerKey, headers);
 
-  // Meter from real usage (observe semantics: counterfactual = actual).
-  const usage = (res.json as { usage?: { input_tokens?: number; output_tokens?: number } })
-    ?.usage;
-  if (res.status === 200 && usage) {
-    const inputTokens = usage.input_tokens ?? 0;
-    const outputTokens = usage.output_tokens ?? 0;
-    const model = String(body["model"] ?? "unknown");
-    const { usd, pricingVersion } = priceUsage(
-      deps.getPricing(),
-      model,
-      inputTokens,
-      outputTokens,
-    );
-    // seat row fields for the event
+  // WS3: hand observed usage to the pipeline; pricing happens there (WS4).
+  const usage = res.status === 200 ? usageFrom(format, res.json) : null;
+  if (usage) {
     const seat = await ctx.db.query<{
       identity_type: "human" | "named_agent";
       user_id: string;
@@ -117,47 +135,14 @@ export async function handleGatewayMessage(
       [seatId],
     );
     const s = seat.rows[0];
-    await ingestEvent(ctx, {
-      event_id: randomUUID(),
-      call_id: randomUUID(), // one gateway call = one underlying call
-      schema_version: "1.0",
-      ts: new Date().toISOString(),
-      seat_id: seatId,
-      identity_type: s.identity_type,
-      user_id: s.user_id,
-      team_id: s.team_id,
-      agent_identity: s.agent_identity,
-      host: "other",
-      capture_path: "gateway",
-      session_id: null,
-      module: "meter",
-      intervention_type: "observe",
-      model_requested: model,
-      model_used: model,
-      tokens: {
-        input_counterfactual: inputTokens,
-        output_counterfactual: outputTokens,
-        input_actual: inputTokens,
-        output_actual: outputTokens,
-      },
-      cost: {
-        counterfactual_usd: usd,
-        actual_usd: usd,
-        avoided_usd: 0,
-        currency: "USD",
-        pricing_source: "provider_registry",
-        pricing_version: pricingVersion,
-      },
-      energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
-      carbon: {
-        avoided_co2e_g: 0,
-        grid_intensity_g_per_kwh: 400,
-        pue: 1.2,
-        region: null,
-        method: "EcoLogits-class",
-        confidence: "Estimated",
-      },
-      methodology_version: "esg-v1",
+    const pipeline: PipelineDeps = { getPricing: deps.getPricing };
+    await recordCapture(ctx, pipeline, {
+      capturePath: "gateway",
+      host: fc.host,
+      seat: { seat_id: seatId, ...s },
+      model: typeof body["model"] === "string" ? (body["model"] as string) : null,
+      inputTokens: usage.input,
+      outputTokens: usage.output,
     });
   }
   return res;

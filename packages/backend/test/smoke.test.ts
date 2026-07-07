@@ -56,15 +56,20 @@ before(async () => {
     gateway: {
       kek: TEST_KEK,
       getPricing: () => TEST_PRICING,
-      // fake provider: echoes usage; asserts the REAL key arrived, not the credential
-      forward: async (body, providerKey) => {
-        if (providerKey !== "sk-ant-test-real-key")
+      // fake provider: echoes usage in the right per-format shape; asserts the
+      // REAL key arrived, not the credential
+      forward: async (url, body, providerKey) => {
+        const isOpenAI = url.includes("openai");
+        const expectedKey = isOpenAI ? "sk-oai-test-real-key" : "sk-ant-test-real-key";
+        if (providerKey !== expectedKey)
           return { status: 500, json: { error: "wrong provider key reached forward" } };
         return {
           status: 200,
           json: {
             model: (body as { model: string }).model,
-            usage: { input_tokens: 100, output_tokens: 20 },
+            usage: isOpenAI
+              ? { prompt_tokens: 100, completion_tokens: 20 }
+              : { input_tokens: 100, output_tokens: 20 },
             content: [{ type: "text", text: "ok" }],
           },
         };
@@ -628,4 +633,207 @@ test("M2 gateway: credential -> seat attribution, BYO key forwarding, metering",
   assert.equal(bySeat[seatB.seat_id], 1);
   // 3 calls x (100 in x 1e-6 + 20 out x 5e-6) = 3 x 0.0002 = 0.0006
   assert.ok(Math.abs(sum.observed_usd - 0.0006) < 1e-9);
+});
+
+// ---------- sprint 3 (WS3 + WS4 + OpenAI gateway) ----------
+
+test("WS3 re-pricing: client observe events are re-priced by the meter", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "reprice" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|rp" },
+    })
+  ).json() as { seat_id: string };
+
+  // client claims a nonsense cost; meter must book snapshot price instead
+  const res = await app.inject({
+    method: "POST", url: "/v1/events",
+    headers: { ...SEAT, ...th },
+    payload: validEvent(seat_id, {
+      model_used: "claude-haiku-4-5-20251001",
+      model_requested: "claude-haiku-4-5-20251001",
+      cost: {
+        counterfactual_usd: 999,
+        actual_usd: 999,
+        avoided_usd: 0,
+        currency: "USD",
+        pricing_source: "plugin-unpriced",
+        pricing_version: "plugin-unpriced",
+      },
+    }),
+  });
+  assert.equal(res.statusCode, 201);
+  const sum = (
+    await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, ...th } })
+  ).json() as { observed_usd: number };
+  // 1000 x 1e-6 + 200 x 5e-6 = 0.002 from TEST_PRICING, NOT 999
+  assert.ok(Math.abs(sum.observed_usd - 0.002) < 1e-9);
+});
+
+test("WS3 free-tier cap (m4): 4th seat accepted, tenant flagged over-cap", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "cap" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  for (let i = 0; i < 4; i++) {
+    const { seat_id } = (
+      await app.inject({
+        method: "POST", url: "/v1/seats",
+        headers: { ...ADMIN, ...th },
+        payload: { identity_type: "human", user_id: `sso|u${i}` },
+      })
+    ).json() as { seat_id: string };
+    const res = await app.inject({
+      method: "POST", url: "/v1/events",
+      headers: { ...SEAT, ...th },
+      payload: validEvent(seat_id, { user_id: `sso|u${i}` }),
+    });
+    assert.equal(res.statusCode, 201); // ACCEPTED even past the cap - no data loss
+  }
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as { events: number; over_seat_cap: boolean };
+  assert.equal(report.events, 4);
+  assert.equal(report.over_seat_cap, true);
+});
+
+test("WS3 OpenAI-format gateway: Bearer credential, usage mapping, cursor host", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "oai" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats",
+      headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|cursor-user" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/provider-keys/openai",
+    headers: { ...ADMIN, ...th },
+    payload: { key: "sk-oai-test-real-key" },
+  });
+  const { credential } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${seat_id}/gateway-credential`,
+      headers: { ...ADMIN, ...th },
+    })
+  ).json() as { credential: string };
+
+  // OpenAI convention: Authorization: Bearer <credential>
+  const res = await app.inject({
+    method: "POST", url: "/gateway/openai/v1/chat/completions",
+    headers: { ...th, authorization: `Bearer ${credential}` },
+    payload: { model: "claude-haiku-4-5-20251001", messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(res.statusCode, 200);
+
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as {
+    events: number;
+    observed_usd: number;
+    by_user: { key: string; events: number }[];
+  };
+  assert.equal(report.events, 1);
+  // prompt 100 + completion 20 priced: 100e-6 + 100e-6 = 0.0002
+  assert.ok(Math.abs(report.observed_usd - 0.0002) < 1e-9);
+  assert.equal(report.by_user[0].key, "sso|cursor-user");
+  // host attribution: cursor (payload check)
+  const ctx = await control.contextFor(t.tenant_id);
+  const row = await ctx.db.query<{ host: string; capture_path: string }>(
+    `SELECT host, capture_path FROM meter_events`,
+  );
+  assert.equal(row.rows[0].host, "cursor");
+  assert.equal(row.rows[0].capture_path, "gateway");
+});
+
+test("WS4 report: per user/team/module/month attribution + labeled impact ranges", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "report" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const seatOf = async (user: string) =>
+    (
+      (await app.inject({
+        method: "POST", url: "/v1/seats",
+        headers: { ...ADMIN, ...th },
+        payload: { identity_type: "human", user_id: user },
+      })).json() as { seat_id: string }
+    ).seat_id;
+  const amy = await seatOf("sso|amy");
+  const ben = await seatOf("sso|ben");
+
+  // synthetic replayed events: 2 users, 2 teams, 2 months, 2 modules
+  const mk = (seat: string, user: string, team: string, ts: string, module: string, it: string, cf: number, act: number) =>
+    validEvent(seat, {
+      user_id: user,
+      team_id: team,
+      ts,
+      module,
+      intervention_type: it,
+      model_used: "claude-haiku-4-5-20251001",
+      model_requested: "claude-haiku-4-5-20251001",
+      tokens: { input_counterfactual: 2000, output_counterfactual: 400, input_actual: 1000, output_actual: 200 },
+      cost: {
+        counterfactual_usd: cf, actual_usd: act, avoided_usd: cf - act,
+        currency: "USD", pricing_source: "meter", pricing_version: "test-2026-07-07",
+      },
+    });
+  const events = [
+    mk(amy, "sso|amy", "eng", "2026-06-15T10:00:00Z", "reduce", "compress", 0.01, 0.004),
+    mk(amy, "sso|amy", "eng", "2026-07-01T10:00:00Z", "recycle", "toolcall_cache", 0.02, 0.0),
+    mk(ben, "sso|ben", "sales", "2026-07-02T10:00:00Z", "reduce", "route", 0.03, 0.01),
+  ];
+  for (const ev of events) {
+    const r = await app.inject({
+      method: "POST", url: "/v1/events", headers: { ...SEAT, ...th }, payload: ev,
+    });
+    assert.equal(r.statusCode, 201);
+  }
+
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as {
+    events: number;
+    avoided_usd: number;
+    by_user: { key: string; avoided_usd: number }[];
+    by_team: { key: string; events: number }[];
+    by_module: { key: string; events: number }[];
+    by_month: { key: string; events: number }[];
+    observed_impact: { energy_kwh: { low: number; median: number; high: number; confidence: string }; co2e_g: { median: number; confidence: string } };
+    avoided_impact: { co2e_g: { median: number } };
+    methodology_note: string;
+  };
+  assert.equal(report.events, 3);
+  assert.ok(Math.abs(report.avoided_usd - 0.046) < 1e-9); // 0.006+0.02+0.02
+  const users = Object.fromEntries(report.by_user.map((u) => [u.key, u.avoided_usd]));
+  assert.ok(Math.abs(users["sso|amy"] - 0.026) < 1e-9);
+  assert.ok(Math.abs(users["sso|ben"] - 0.02) < 1e-9);
+  assert.equal(report.by_team.length, 2);
+  assert.equal(report.by_module.length, 2);
+  assert.deepEqual(report.by_month.map((m) => m.key).sort(), ["2026-06", "2026-07"]);
+  // impact: ranges ordered, confidence labeled, avoided from avoided tokens
+  const e = report.observed_impact.energy_kwh;
+  assert.ok(e.low < e.median && e.median < e.high);
+  assert.ok(["Measured", "Benchmarked", "Estimated"].includes(e.confidence));
+  assert.ok(report.observed_impact.co2e_g.median > 0);
+  assert.ok(report.avoided_impact.co2e_g.median > 0); // 1200 avoided tokens per event
+  assert.ok(report.methodology_note.includes("Ranges"));
+
+  // month filter
+  const june = (
+    await app.inject({ method: "GET", url: "/v1/meter/report?month=2026-06", headers: { ...SEAT, ...th } })
+  ).json() as { events: number };
+  assert.equal(june.events, 1);
+  const badMonth = await app.inject({
+    method: "GET", url: "/v1/meter/report?month=junk", headers: { ...SEAT, ...th },
+  });
+  assert.equal(badMonth.statusCode, 400);
 });

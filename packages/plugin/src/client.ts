@@ -17,7 +17,8 @@ export interface ObservedCall {
   model?: string | null;
   inputTokens: number;
   outputTokens: number;
-  /** priced cost if the caller knows it; the meter re-prices server-side in WS4 */
+  /** hint only: the WS3 pipeline RE-PRICES every client observe event from the
+   * approved registry snapshot server-side; client cost is never booked */
   costUsd?: number;
   capturePath: "hook" | "tool";
 }
