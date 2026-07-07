@@ -174,10 +174,19 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await adminOnly(req);
     const ctx = await tenantCtx(req);
     const body = req.body as Partial<TenantPolicy>;
+    // QA cross-cutting: PATCH semantics - merge over the STORED policy so a
+    // sectioned update can never silently reset the sections it omitted.
+    const current = await getPolicy(ctx);
     const merged: TenantPolicy = {
-      ...DEFAULT_POLICY,
+      ...current,
       ...body,
-      reduce: { ...DEFAULT_POLICY.reduce, ...(body.reduce ?? {}) },
+      reduce: { ...current.reduce, ...(body.reduce ?? {}) },
+      recycle: {
+        toolcall: { ...current.recycle.toolcall, ...(body.recycle?.toolcall ?? {}) },
+        response: { ...current.recycle.response, ...(body.recycle?.response ?? {}) },
+      },
+      reuse: { ...current.reuse, ...(body.reuse ?? {}) },
+      clearance: { ...current.clearance, ...(body.clearance ?? {}) },
     };
     await setPolicy(ctx, merged);
     return reply.status(204).send();
@@ -609,10 +618,25 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   // ---- meter (WS3 pipeline: validate -> normalize/re-price -> append) ----
   app.post("/v1/events", async (req, reply) => {
-    await auth(req);
+    const role = await auth(req);
     const ctx = await tenantCtx(req);
     const ev = interventionEventSchema.parse(req.body);
-    const res = await normalizeAndAppend(ctx, { getPricing: deps.gateway.getPricing }, ev);
+    // QA B1 (meter forgery): the only event type a SEAT can originate is
+    // observe (which books avoided_usd = 0 by construction and is re-priced
+    // server-side regardless of what the client claims). Non-observe events
+    // are engine-born in-process; the API accepts them from ADMIN only
+    // (backfill/import - the org lying to itself is its own problem, a seat
+    // inflating the org's savings statement is ours).
+    if (role !== "admin" && ev.intervention_type !== "observe")
+      return reply.status(403).send({
+        error: "seats may only submit observe events; intervention events are engine-originated (QA B1)",
+      });
+    const res = await normalizeAndAppend(
+      ctx,
+      { getPricing: deps.gateway.getPricing },
+      ev,
+      /* fromClient */ role !== "admin",
+    );
     return reply.status(201).send(res);
   });
 

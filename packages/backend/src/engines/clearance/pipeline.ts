@@ -163,8 +163,11 @@ export async function runClearance(
     try {
       classification = await classifier(input.text);
     } catch {
-      classification = { risk_category: "none", confidence: "low" };
-      reasons.push("classifier unavailable - treated as unclassified (conservative default cap applies)");
+      // QA M1: an outage must FAIL CONSERVATIVE - cap the tier, do not
+      // pretend the content was classified clean.
+      classification = null;
+      maxTier = minTier(maxTier, "team");
+      reasons.push("classifier unavailable - conservatively capped at team until re-classified");
     }
   }
 

@@ -118,18 +118,28 @@ export async function captureAsset(
       JSON.stringify(verdict),
     ],
   );
+  // QA M3: on fingerprint collision the INSERT is a no-op - return the verdict
+  // that is actually STORED (and therefore enforced), never a fresh one that
+  // may differ under a changed policy.
+  const storedRow = await ctx.db.query<{ clearance: ClearanceVerdict | string }>(
+    `SELECT clearance FROM assets WHERE exact_fp = $1`,
+    [fp],
+  );
+  const stored = storedRow.rows[0]?.clearance;
+  const effective: ClearanceVerdict =
+    typeof stored === "string" ? JSON.parse(stored) : (stored ?? verdict);
   await auditLog(ctx, {
     exact_fp: fp,
     action: "capture",
     actor: input.provenance.producer,
     detail: {
-      max_tier: verdict.max_tier,
-      findings: verdict.findings,
-      classification: verdict.classification,
-      reasons: verdict.reasons,
+      max_tier: effective.max_tier,
+      findings: effective.findings,
+      classification: effective.classification,
+      reasons: effective.reasons,
     },
   });
-  return { captured: true, exact_fp: fp, clearance: verdict };
+  return { captured: true, exact_fp: fp, clearance: effective };
 }
 
 export interface AssetRow {

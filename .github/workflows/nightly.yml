@@ -12,6 +12,10 @@ on:
 jobs:
   nightly:
     runs-on: ubuntu-latest
+    env:
+      # QA M2: job-level env IS visible in step-level `if`; a step's own env is
+      # not. Without this the weekly poison slice could never fire.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     defaults:
       run:
         working-directory: packages/backend
@@ -26,8 +30,6 @@ jobs:
         run: npx tsx scripts/nightly.ts --with-registry
       - name: poison slice (weekly, only when key configured)
         if: github.event.schedule == '47 6 * * 1' && env.OPENAI_API_KEY != ''
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" > /tmp/ci.env
           CIRCULARA_ENV_FILE=/tmp/ci.env npx tsx scripts/eval-poison.ts

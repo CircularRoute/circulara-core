@@ -118,6 +118,7 @@ export async function normalizeAndAppend(
   ctx: TenantContext,
   deps: PipelineDeps,
   ev: InterventionEvent,
+  fromClient = false, // QA B1: API-originated events get zero pricing trust
 ): Promise<{ event_id: string }> {
   const normalized = { ...ev, cost: { ...ev.cost } };
 
@@ -132,8 +133,9 @@ export async function normalizeAndAppend(
   // observe books avoided_usd = 0 by construction.
   if (
     normalized.intervention_type === "observe" &&
-    normalized.cost.pricing_source !== "meter"
+    (fromClient || normalized.cost.pricing_source !== "meter")
   ) {
+    // fromClient: a client claiming pricing_source "meter" is re-priced anyway (QA B1)
     const priced = priceTokens(
       deps.getPricing(),
       normalized.model_used ?? normalized.model_requested,

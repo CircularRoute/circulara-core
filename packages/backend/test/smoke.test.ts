@@ -267,7 +267,7 @@ test("tenant lifecycle + seat rules + event flow + isolation", async () => {
   const sourcingOk = await app.inject({
     method: "POST",
     url: "/v1/events",
-    headers: { ...SEAT, "x-tenant-id": t1.tenant_id },
+    headers: { ...ADMIN, "x-tenant-id": t1.tenant_id }, // engine-class event: admin-only (QA B1)
     payload: validEvent(seat_id, {
       schema_version: "1.1",
       module: "reuse",
@@ -364,7 +364,7 @@ test("M1 stacking rule: chained events on one call_id telescope, no double-count
     const res = await app.inject({
       method: "POST",
       url: "/v1/events",
-      headers: { ...SEAT, "x-tenant-id": t.tenant_id },
+      headers: { ...ADMIN, "x-tenant-id": t.tenant_id }, // engine-class events: admin-only (QA B1)
       payload: validEvent(seat_id, {
         call_id: callId,
         module: "reduce",
@@ -829,7 +829,7 @@ test("WS4 report: per user/team/module/month attribution + labeled impact ranges
   ];
   for (const ev of events) {
     const r = await app.inject({
-      method: "POST", url: "/v1/events", headers: { ...SEAT, ...th }, payload: ev,
+      method: "POST", url: "/v1/events", headers: { ...ADMIN, ...th }, payload: ev, // QA B1
     });
     assert.equal(r.statusCode, 201);
   }
@@ -1903,7 +1903,7 @@ test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works
     },
   ]) {
     const r = await app.inject({
-      method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+      method: "POST", url: "/v1/events", headers: { ...ADMIN, ...th }, // QA B1
       payload: validEvent(seat_id, { ts: "2026-07-06T10:00:00Z", ...over }),
     });
     assert.equal(r.statusCode, 201);
@@ -2043,4 +2043,139 @@ test("wave8 billing: idle unbilled, library NEVER metered, coupon math, first-10
     url: `/dashboard/statement?tenant=${t.tenant_id}&token=dev-seat-token&month=${month}`,
   });
   assert.ok(st.body.includes("$34.30")); // 49 * 0.7
+});
+
+
+// ---------- QA fix pass (qa_waves6-9): B1, B2, M1, M3, policy PATCH ----------
+
+test("QA-B1: seats cannot forge savings; claimed meter pricing is re-priced", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "forge" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|mallory" },
+    })
+  ).json() as { seat_id: string };
+
+  // forgery attempt 1: seat posts a non-observe event with huge avoided -> 403
+  const forge = await app.inject({
+    method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+    payload: validEvent(seat_id, {
+      module: "reduce", intervention_type: "compress",
+      cost: { counterfactual_usd: 57777, actual_usd: 0, avoided_usd: 57777, currency: "USD", pricing_source: "meter", pricing_version: "x" },
+    }),
+  });
+  assert.equal(forge.statusCode, 403);
+
+  // forgery attempt 2: seat posts observe CLAIMING pricing_source meter with a
+  // fake cost -> accepted but RE-PRICED from the snapshot (fake number gone)
+  const sneak = await app.inject({
+    method: "POST", url: "/v1/events", headers: { ...SEAT, ...th },
+    payload: validEvent(seat_id, {
+      model_used: "claude-haiku-4-5-20251001", model_requested: "claude-haiku-4-5-20251001",
+      cost: { counterfactual_usd: 9999, actual_usd: 9999, avoided_usd: 0, currency: "USD", pricing_source: "meter", pricing_version: "x" },
+    }),
+  });
+  assert.equal(sneak.statusCode, 201);
+  const sum = (
+    await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, ...th } })
+  ).json() as { observed_usd: number; avoided_usd: number };
+  assert.ok(Math.abs(sum.observed_usd - 0.002) < 1e-9); // snapshot price, not 9999
+  assert.equal(sum.avoided_usd, 0);
+});
+
+test("QA-B2: external rungs obey the schema gate (mismatch falls to build)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "b2" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|b2" },
+    })
+  ).json() as { seat_id: string };
+  // the paid fixture matches by keyword but declares NO schema_hint; a caller
+  // demanding schema s9 on a type-3 spec must fall through to build
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: {
+        seat_id,
+        spec: { asset_type: 3, canonical_source_id: "enrich-api", params: { seg: "gate" }, schema_version: "s9", freshness_bucket: "static" },
+        description: "premium firmographics dataset",
+        constraints: { schema_version: "s9" },
+        build_estimate: { external_fees_usd: 2000 },
+      },
+    })
+  ).json() as { verdict: string };
+  assert.equal(acq.verdict, "build"); // never merely "about the same thing"
+});
+
+test("QA-M1: classifier outage caps conservatively at team", async () => {
+  const { runClearance } = await import("../src/engines/clearance/pipeline.js");
+  const { DEFAULT_POLICY } = await import("../src/engines/policy.js");
+  const v = await runClearance(
+    DEFAULT_POLICY,
+    { text: "possibly sensitive but regex-clean content", provenance: { producer: "org", source: "internal", build_method: "x" }, license: { redistributable: true, spdx_or_terms: "MIT" } },
+    async () => { throw new Error("outage"); },
+  );
+  assert.equal(v.blocked, false);
+  assert.equal(v.max_tier, "team"); // NOT the org default: fail conservative
+  assert.ok(v.reasons.some((r) => r.includes("conservatively capped")));
+});
+
+test("QA-M3: capture on fingerprint collision returns the STORED verdict", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "m3" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true, authorized_asset_types: [1, 2, 3], buy_threshold: 0.7, semantic_enabled: false, semantic_threshold: 0.95 } },
+  });
+  const spec = { asset_type: 2, source_checksum: "5".repeat(64), pipeline: "md", pipeline_version: "1" };
+  const payload = {
+    spec, content: "stable content",
+    provenance: { producer: "org", source: "internal", build_method: "parse" },
+    license: { redistributable: true, spdx_or_terms: "MIT" },
+  };
+  const first = (
+    await app.inject({ method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th }, payload })
+  ).json() as { clearance: { max_tier: string } };
+  assert.equal(first.clearance.max_tier, "org");
+
+  // policy later raises the default cap; re-capture of the SAME fp must report
+  // the STORED (enforced) verdict, not a fresh marketable one
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { clearance: { default_max_tier: "marketable", rules: [], auto_approve_org: false } },
+  });
+  const second = (
+    await app.inject({ method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th }, payload })
+  ).json() as { clearance: { max_tier: string } };
+  assert.equal(second.clearance.max_tier, "org"); // stored cap, not the new policy
+});
+
+test("QA policy-PATCH: sectioned updates preserve everything not mentioned", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "patch" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { monthly_budget_usd: 500 }, // a DIFFERENT section
+  });
+  const pol = (
+    await app.inject({ method: "GET", url: "/v1/policy", headers: { ...ADMIN, ...th } })
+  ).json() as { monthly_budget_usd: number; reuse: { capture_enabled: boolean } };
+  assert.equal(pol.monthly_budget_usd, 500);
+  assert.equal(pol.reuse.capture_enabled, true); // NOT silently reset (QA finding)
 });

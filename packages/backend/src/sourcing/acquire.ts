@@ -98,6 +98,44 @@ function costGate(reuseCost: number, buildCost: number, threshold: number): bool
   return reuseCost <= buildCost * threshold;
 }
 
+/**
+ * QA B2: the §6.5 gates apply to EVERY rung, not just the org library.
+ * External candidates (Commons/catalog) are gated on the metadata they carry:
+ * schema hint must satisfy the requested schema, freshness must match the
+ * spec's bucket for bucketed asset types, quality must meet the constraint.
+ */
+function externalPassesGates(
+  constraints: LookupConstraints,
+  spec: AcquireRequest["spec"],
+  candidate: { schema_hint?: string | null; freshness?: string; num_uses?: number },
+): boolean {
+  if (
+    constraints.schema_version != null &&
+    candidate.schema_hint != null &&
+    candidate.schema_hint !== constraints.schema_version
+  )
+    return false; // schema gate
+  if (
+    constraints.schema_version != null &&
+    candidate.schema_hint == null &&
+    spec.asset_type === 3
+  )
+    return false; // schema demanded but the candidate declares none: never "about the same thing"
+  if (
+    spec.asset_type === 3 &&
+    candidate.freshness != null &&
+    spec.freshness_bucket !== "static" &&
+    candidate.freshness !== spec.freshness_bucket
+  )
+    return false; // freshness gate for bucketed types
+  if (
+    constraints.min_quality_uses != null &&
+    (candidate.num_uses ?? 0) < constraints.min_quality_uses
+  )
+    return false; // quality gate
+  return true;
+}
+
 export async function acquireAsset(
   ctx: TenantContext,
   policy: TenantPolicy,
@@ -157,7 +195,11 @@ export async function acquireAsset(
   // ---- rung 2: Circulara Commons (exact fp; same gates by construction) ----
   const fp = exactFingerprint(req.spec);
   const commonsHit = await deps.commons.lookup(fp);
-  if (commonsHit && costGate(0, build.total_usd, threshold)) {
+  if (
+    commonsHit &&
+    externalPassesGates(constraints, req.spec, { num_uses: commonsHit.quality.num_uses }) &&
+    costGate(0, build.total_usd, threshold)
+  ) {
     const avoided = build.total_usd;
     // cache a local copy in the org library (provenance = commons)
     const bytes = await deps.commons.fetchBytes(commonsHit.checksum);
@@ -206,7 +248,9 @@ export async function acquireAsset(
 
   // ---- rung 3: free/open catalogs (demand-pulled) ----
   const freeHits = await deps.index.search(desc, "free");
-  const freeBest = freeHits[0];
+  const freeBest = freeHits.find((h) =>
+    externalPassesGates(constraints, req.spec, { schema_hint: h.schema_hint, freshness: h.freshness }),
+  );
   if (freeBest && costGate(0, build.total_usd, threshold)) {
     const catalog = deps.index.catalogFor(freeBest.source)!;
     const bytes = await catalog.acquire!(freeBest);
@@ -282,7 +326,9 @@ export async function acquireAsset(
 
   // ---- rung 4: paid certified catalogs -> PROPOSAL, never auto-purchase (D15/AD11) ----
   const paidHits = await deps.index.search(desc, "paid");
-  const paidBest = paidHits[0];
+  const paidBest = paidHits.find((h) =>
+    externalPassesGates(constraints, req.spec, { schema_hint: h.schema_hint, freshness: h.freshness }),
+  );
   if (paidBest && costGate(paidBest.price_usd, build.total_usd, threshold)) {
     const proposalId = randomUUID();
     await ctx.db.query(
