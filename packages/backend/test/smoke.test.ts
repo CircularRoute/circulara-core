@@ -2396,3 +2396,159 @@ test("QA-MJ7: coupon covers exactly 12 billing periods; 10th slot is the last", 
   const m12 = await computeInvoice(ctx, "2026-07");
   assert.equal(m12.coupon, null); // 13th period: expired (MJ7)
 });
+
+// ---------- task 010 (launch backend: Stripe flag + live catalogs) ----------
+
+test("task010 Stripe: test mode is default; webhook rejects; live gate needs all keys", async () => {
+  const { resolveStripeConfig, verifyWebhook, createCheckoutSession } = await import(
+    "../src/billing/stripe.js"
+  );
+  // default (no env) -> test
+  const def = resolveStripeConfig();
+  assert.equal(def.mode, "test");
+
+  // webhook in test mode ALWAYS throws (no unauthenticated billing events)
+  assert.throws(() => verifyWebhook(def, "{}", "t=1,v1=abc"));
+
+  // checkout in test mode -> stub URL, no network
+  const co = await createCheckoutSession(def, "team", "annual", "tid", 5);
+  assert.equal(co.mode, "test");
+  assert.ok(co.checkout_url.includes("test.invalid"));
+  assert.ok(co.note.includes("no live charge"));
+
+  // a fabricated LIVE config verifies a correctly-signed webhook and rejects a bad one
+  const { createHmac } = await import("node:crypto");
+  const live = { mode: "live" as const, secretKey: "sk_live_x", webhookSecret: "whsec_test", reason: "x" };
+  const ts = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({ type: "checkout.session.completed" });
+  const good = createHmac("sha256", "whsec_test").update(`${ts}.${payload}`).digest("hex");
+  const ev = verifyWebhook(live, payload, `t=${ts},v1=${good}`) as { type: string };
+  assert.equal(ev.type, "checkout.session.completed");
+  assert.throws(() => verifyWebhook(live, payload, `t=${ts},v1=deadbeef`)); // tampered
+  assert.throws(() => verifyWebhook(live, payload, `t=${ts - 9999},v1=${good}`)); // stale
+});
+
+test("task010 billing routes: mode probe + checkout session (test) via API", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "stripe" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const mode = (
+    await app.inject({ method: "GET", url: "/v1/billing/mode", headers: { ...SEAT, ...th } })
+  ).json() as { mode: string };
+  assert.equal(mode.mode, "test");
+  const co = (
+    await app.inject({
+      method: "POST", url: "/v1/billing/checkout-intent", headers: { ...SEAT, ...th },
+      payload: { plan: "business", cycle: "monthly" },
+    })
+  ).json() as { mode: string; price_per_seat_usd: number };
+  assert.equal(co.mode, "test");
+  assert.equal(co.price_per_seat_usd, 99);
+  // unsigned webhook in test mode -> rejected
+  const wh = await app.inject({
+    method: "POST", url: "/v1/billing/webhook", headers: th, payload: { type: "x" },
+  });
+  assert.equal(wh.statusCode, 400);
+});
+
+test("task010 live catalogs: HF + CKAN adapters parse fixture-shaped API JSON; license mapped conservatively", async () => {
+  const { HuggingFaceCatalog, CkanCatalog, mapLicense } = await import(
+    "../src/sourcing/liveCatalogs.js"
+  );
+  // conservative license mapping
+  assert.equal(mapLicense("cc-by-4.0").redistributable, true);
+  assert.equal(mapLicense("MIT").redistributable, true);
+  assert.equal(mapLicense("some-custom-eula").redistributable, false);
+  assert.equal(mapLicense(null).redistributable, false); // unknown -> NOT redistributable (D14)
+
+  // HF adapter over a fake fetch returning HF's real shape
+  const hfFetch = (async () =>
+    new Response(JSON.stringify([
+      { id: "org/qa-dataset", description: "open QA data", cardData: { license: "cc-by-4.0" }, lastModified: "2026-06-01" },
+    ]), { status: 200 })) as typeof fetch;
+  const hf = new HuggingFaceCatalog(hfFetch);
+  const hits = await hf.search("qa");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].source, "hf_hub");
+  assert.equal(hits[0].license.redistributable, true);
+
+  // CKAN adapter over data.gov's real response shape
+  const ckanFetch = (async () =>
+    new Response(JSON.stringify({ result: { results: [
+      { id: "pkg-1", title: "Census rows", notes: "public data", license_id: "cc0-1.0", metadata_modified: "2026-05-01" },
+    ] } }), { status: 200 })) as typeof fetch;
+  const ckan = new CkanCatalog("data_gov", "https://catalog.data.gov", ckanFetch);
+  const cHits = await ckan.search("census");
+  assert.equal(cHits[0].license.redistributable, true);
+
+  // network failure -> empty (demand-pulled, never throws)
+  const deadFetch = (async () => { throw new Error("down"); }) as typeof fetch;
+  const dead = new HuggingFaceCatalog(deadFetch);
+  assert.deepEqual(await dead.search("x"), []);
+});
+
+// ---------- QA re-review residuals R1/R3 (folded into task 010) ----------
+
+test("R3: deprovision endpoint revokes an agent token via HTTP (MJ8 completion)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "deprov" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const agent = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "named_agent", user_id: "sso|o", agent_identity: "bot" },
+    })
+  ).json() as { seat_id: string };
+  const { token } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${agent.seat_id}/token`, headers: { ...ADMIN, ...th },
+    })
+  ).json() as { token: string };
+  // token works...
+  assert.equal(
+    (await app.inject({ method: "GET", url: "/v1/meter/report", headers: { authorization: `Bearer ${token}`, ...th } })).statusCode,
+    200,
+  );
+  // ... deprovision via HTTP ...
+  const dep = await app.inject({
+    method: "POST", url: `/v1/seats/${agent.seat_id}/deprovision`, headers: { ...ADMIN, ...th },
+  });
+  assert.equal(dep.statusCode, 200);
+  // ... token now revoked
+  assert.equal(
+    (await app.inject({ method: "GET", url: "/v1/meter/report", headers: { authorization: `Bearer ${token}`, ...th } })).statusCode,
+    401,
+  );
+  // second deprovision -> 404
+  assert.equal(
+    (await app.inject({ method: "POST", url: `/v1/seats/${agent.seat_id}/deprovision`, headers: { ...ADMIN, ...th } })).statusCode,
+    404,
+  );
+});
+
+test("R1: a seat cannot self-declare source=internal to dodge the external cap", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "r1" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true }, clearance: { default_max_tier: "marketable", rules: [], auto_approve_org: false } },
+  });
+  const spec = { asset_type: 2, source_checksum: "d4".repeat(32), pipeline: "md", pipeline_version: "1" };
+  // SEAT (non-admin) claims source:internal + redistributable -> still capped
+  // at org because a seat capture is treated as external for the license cap
+  const seatCap = (
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: {
+        spec, content: "asset a seat claims is internal",
+        provenance: { producer: "org", source: "internal", build_method: "x" },
+        license: { redistributable: false, spdx_or_terms: null },
+      },
+    })
+  ).json() as { clearance: { max_tier: string } };
+  assert.equal(seatCap.clearance.max_tier, "org"); // NOT marketable
+});

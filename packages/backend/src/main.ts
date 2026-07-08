@@ -48,7 +48,18 @@ const { CommonsStore } = await import("./sourcing/commons.js");
 const { FederatedIndex, launchCatalogs } = await import("./sourcing/catalogs.js");
 const commons = new CommonsStore(cfg.dataDir);
 await commons.init();
-const index = new FederatedIndex(launchCatalogs());
+// task 010: live free-catalog HTTP adapters when enabled; fixtures otherwise.
+// Paid adapters stay fixture-shaped (customer-account-gated, D15).
+let catalogs;
+if (process.env.CIRCULARA_LIVE_CATALOGS === "true") {
+  const { liveFreeCatalogs } = await import("./sourcing/liveCatalogs.js");
+  const { launchCatalogs: paidFixtures } = await import("./sourcing/catalogs.js");
+  const paid = paidFixtures().filter((c) => c.tier === "paid");
+  catalogs = [...liveFreeCatalogs(), ...paid];
+} else {
+  catalogs = launchCatalogs();
+}
+const index = new FederatedIndex(catalogs);
 const app = buildApp({
   control,
   objects: new FsObjectStore(join(cfg.dataDir, "objects")),

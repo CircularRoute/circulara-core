@@ -28,6 +28,10 @@ jobs:
         working-directory: .
       - name: deterministic core (eval + suite + registry candidate)
         run: npx tsx scripts/nightly.ts --with-registry
+      # Task 010: the weekly poison slice runs once OPENAI_API_KEY is set as a
+      # repo secret (Settings > Secrets and variables > Actions). Founder/CTO
+      # action - the Builder cannot set repo secrets. Until set, env is empty
+      # and this step is skipped (the `if` guard), so the workflow stays green.
       - name: poison slice (weekly, only when key configured)
         if: github.event.schedule == '47 6 * * 1' && env.OPENAI_API_KEY != ''
         run: |

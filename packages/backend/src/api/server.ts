@@ -159,6 +159,26 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return reply.status(201).send({ token, expires_in: 3600 });
   });
 
+  // R3 (QA MJ8 completion): admin deprovisions a seat; agent tokens for it
+  // are then revoked at the next request (active recheck at the boundary).
+  app.post("/v1/seats/:seatId/deprovision", async (req, reply) => {
+    await adminOnly(req);
+    const ctx = await tenantCtx(req);
+    const seatId = (req.params as { seatId: string }).seatId;
+    const r = await ctx.db.query(
+      `UPDATE seats SET active = false WHERE seat_id = $1 AND active`,
+      [seatId],
+    );
+    // also disable this seat's gateway credentials
+    await ctx.db.query(
+      `UPDATE gateway_credentials SET active = false WHERE seat_id = $1`,
+      [seatId],
+    );
+    if ((r.affectedRows ?? 0) === 0)
+      return reply.status(404).send({ error: "unknown or already-inactive seat" });
+    return { seat_id: seatId, active: false };
+  });
+
   // WS2/M2: per-seat gateway credential (admin issues; hash-stored, shown once)
   app.post("/v1/seats/:seatId/gateway-credential", async (req, reply) => {
     await adminOnly(req);
@@ -307,6 +327,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const policy = await getPolicy(ctx);
     const classifier = deps.classifierFor ? await deps.classifierFor(ctx) : null;
     const authRes = await deps.auth.verify(req.headers.authorization);
+    // R1 (QA MJ1 hardening): only an ADMIN may vouch source="internal". A
+    // seat/agent capture is treated as external for the license cap, so it
+    // cannot self-declare internal provenance to dodge the org cap.
+    const declaredSource = b.provenance.source;
+    const effectiveSource =
+      declaredSource === "internal" && authRes.role !== "admin"
+        ? "declared_internal_unverified"
+        : declaredSource;
     const res = await captureAsset(
       ctx,
       deps.objects,
@@ -319,7 +347,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         provenance: {
           producer: authRes.subject ?? "unknown",
           declared_producer: b.provenance.producer,
-          source: b.provenance.source,
+          source: effectiveSource,
           build_method: b.provenance.build_method,
         },
         license: b.license,
@@ -795,19 +823,53 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return reply.status(res.redeemed ? 200 : 409).send(res);
   });
 
-  // checkout intent for the public pricing page (CTO wires the button)
+  // checkout session for the public pricing page (CTO wires the button).
+  // Stripe module resolves test-vs-live from env; test is the default.
   app.post("/v1/billing/checkout-intent", async (req, reply) => {
     await auth(req);
     const ctx = await tenantCtx(req);
     const b = req.body as { plan?: string; cycle?: string };
-    const { checkoutIntent, PLAN_PRICES } = await import("../billing/billing.js");
+    const { PLAN_PRICES, computeInvoice } = await import("../billing/billing.js");
+    const { resolveStripeConfig, createCheckoutSession } = await import("../billing/stripe.js");
     if (!b?.plan || !(b.plan in PLAN_PRICES))
       return reply.status(400).send({ error: "plan required" });
-    return checkoutIntent(
+    const month = new Date().toISOString().slice(0, 7);
+    const inv = await computeInvoice(ctx, month);
+    return createCheckoutSession(
+      resolveStripeConfig(),
       b.plan as keyof typeof PLAN_PRICES,
       b.cycle === "annual" ? "annual" : "monthly",
       ctx.tenantId,
+      Math.max(1, inv.active_seats),
     );
+  });
+
+  // Stripe webhook (live mode only; test mode rejects unauthenticated events).
+  // No auth() - authenticity is the SIGNATURE, verified against the secret.
+  app.post("/v1/billing/webhook", async (req, reply) => {
+    const { resolveStripeConfig, verifyWebhook } = await import("../billing/stripe.js");
+    const scfg = resolveStripeConfig();
+    let event: unknown;
+    try {
+      event = verifyWebhook(
+        scfg,
+        typeof req.body === "string" ? req.body : JSON.stringify(req.body),
+        req.headers["stripe-signature"] as string | undefined,
+      );
+    } catch (e) {
+      return reply.status((e as { statusCode?: number }).statusCode ?? 400).send({ error: (e as Error).message });
+    }
+    // v1 records the event; subscription-state application lands with the
+    // deploy target. Money never moves here - Stripe already charged.
+    return reply.status(200).send({ received: true, type: (event as { type?: string })?.type ?? null });
+  });
+
+  // Billing mode probe (so the CTO/founder can confirm the gate is closed).
+  app.get("/v1/billing/mode", async (req) => {
+    await auth(req);
+    const { resolveStripeConfig } = await import("../billing/stripe.js");
+    const scfg = resolveStripeConfig();
+    return { mode: scfg.mode, reason: scfg.reason };
   });
 
   // ---- wave 7: ESG-ready export (credible-transparent, D8) ----
