@@ -1,12 +1,15 @@
-# Wave 9 - nightly maintenance automation (D12).
-# Deterministic core runs nightly at $0 API spend. The poison slice (LLM
-# embeddings, ~$0.001/run) runs WEEKLY and needs OPENAI_API_KEY as a repo
-# secret - not set by default; enabling it is a founder action (spend).
+# Wave 9 - maintenance automation (D12).
+# GO-LIVE DECISION (founder 2026-07-07, decisions.md): NO scheduled eval until
+# a PAYING customer exists. Free Observe only meters - the optimization-quality
+# eval guards nothing a free user depends on, and pre-revenue API run-rate must
+# stay ~$0. So the cron schedule is DISABLED at launch; the runner stays fully
+# runnable on demand (workflow_dispatch + `npx tsx scripts/nightly.ts`).
+# RE-ENABLE the schedule below at FIRST PAID CONVERSION (within the $200/mo cap).
 name: nightly
 on:
-  schedule:
-    - cron: "17 6 * * *" # nightly deterministic core
-    - cron: "47 6 * * 1" # weekly (Mon): poison slice, if the secret exists
+  # schedule:  # <-- UNCOMMENT at first paid conversion (go-live decision 2026-07-07)
+  #   - cron: "17 6 * * *" # nightly deterministic core ($0 API)
+  #   - cron: "47 6 * * 1" # weekly (Mon): poison slice, if OPENAI_API_KEY secret is set
   workflow_dispatch: {}
 
 jobs:
