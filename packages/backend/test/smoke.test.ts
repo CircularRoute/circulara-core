@@ -2552,3 +2552,42 @@ test("R1: a seat cannot self-declare source=internal to dodge the external cap",
   ).json() as { clearance: { max_tier: string } };
   assert.equal(seatCap.clearance.max_tier, "org"); // NOT marketable
 });
+
+// ---------- QA R2: acquire-loop aggregate cap on estimated savings ----------
+
+test("R2: capture->acquire loop cannot inflate estimated savings past the monthly ceiling", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "r2" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  // low ceiling to exercise the clamp cheaply
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true, max_monthly_estimated_avoided_usd: 3000 } },
+  });
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|r2" },
+    })
+  ).json() as { seat_id: string };
+
+  // each acquire tries to book ~$2000 estimated (clamped fee ceiling anyway);
+  // loop several times - the running total must never exceed $3000
+  for (let i = 0; i < 5; i++) {
+    const spec = { asset_type: 2, source_checksum: String(i).repeat(64).slice(0, 64), pipeline: "md", pipeline_version: "1" };
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: { spec, content: `tiny ${i}`, provenance: { producer: "org", source: "internal", build_method: "x" } },
+    });
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: { seat_id, spec, build_estimate: { external_fees_usd: 2000 } },
+    });
+  }
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as { avoided_usd: number; avoided_usd_by_basis: Record<string, number> };
+  assert.ok((report.avoided_usd_by_basis.estimated ?? 0) <= 3000 + 1e-9); // clamped
+  assert.ok(report.avoided_usd <= 3000 + 1e-9);
+});

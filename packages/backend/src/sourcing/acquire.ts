@@ -169,12 +169,24 @@ export async function acquireAsset(
   const pricingVersion = pricing?.pricing_version ?? "unpriced";
   const desc = req.description ?? describeSpec(req.spec);
 
+  // QA R2: how much estimate-basis avoided is left this month for this tenant.
+  // Clamps a capture->acquire loop from inflating the estimated bucket.
+  const monthPrefix = new Date().toISOString().slice(0, 7);
+  const bookedRow = await ctx.db.query<{ s: string }>(
+    `SELECT coalesce(sum(avoided_usd),0)::text AS s FROM meter_events
+      WHERE to_char(ts,'YYYY-MM') = $1 AND payload->'cost'->>'basis' = 'estimated'`,
+    [monthPrefix],
+  );
+  const ceiling = policy.reuse.max_monthly_estimated_avoided_usd ?? 50_000;
+  const remainingHeadroom = Math.max(0, ceiling - Number(bookedRow.rows[0].s));
+  const clampEstimated = (v: number) => Math.min(v, remainingHeadroom);
+
   // ---- rung 1: org library ----
   const lib = await libraryLookup(ctx, policy, req.spec, constraints, deps.embedder);
   if (lib) {
     const reuseCost = Number(lib.row.price) * 0 + 0; // access-controlled fetch ~ free (§6.3 single-tenant)
     if (costGate(reuseCost, build.total_usd, threshold)) {
-      const avoided = Math.max(0, hardAvoided - reuseCost); // MJ5: hard dollars only
+      const avoided = clampEstimated(Math.max(0, hardAvoided - reuseCost)); // MJ5 hard $ + R2 clamp
       await ctx.db.query(
         `UPDATE assets SET quality = jsonb_set(quality, '{num_uses}', ((quality->>'num_uses')::int + 1)::text::jsonb) WHERE exact_fp = $1`,
         [lib.row.exact_fp],
@@ -220,7 +232,7 @@ export async function acquireAsset(
     externalPassesGates(constraints, req.spec, { num_uses: commonsHit.quality.num_uses }) &&
     costGate(0, build.total_usd, threshold)
   ) {
-    const avoided = hardAvoided; // MJ5: hard dollars only
+    const avoided = clampEstimated(hardAvoided); // MJ5 hard $ + R2 clamp
     // cache a local copy in the org library (provenance = commons)
     const bytes = await deps.commons.fetchBytes(commonsHit.checksum);
     if (bytes && policy.reuse.capture_enabled) {
@@ -309,7 +321,7 @@ export async function acquireAsset(
       });
       commonsCaptured = admitted.admitted;
     }
-    const avoided = hardAvoided; // MJ5: hard dollars only; fetch cost ~ 0
+    const avoided = clampEstimated(hardAvoided); // MJ5 hard $ + R2 clamp; fetch cost ~ 0
     await ingestEvent(
       ctx,
       SOURCING_EVENT(seat, {

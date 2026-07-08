@@ -50,6 +50,10 @@ export interface TenantPolicy {
     buy_threshold: number; // <= 0.70 HARD cap (§6.4): only reuse obvious wins
     semantic_enabled: boolean; // fuzzy fingerprint fallback: OPT-IN
     semantic_threshold: number; // >= 0.92 floor, default 0.95
+    // QA R2: aggregate ceiling on ESTIMATE-basis avoided $ booked per month.
+    // A capture->acquire loop cannot inflate the estimated bucket past this;
+    // measured savings (BL2-unforgeable) are unaffected.
+    max_monthly_estimated_avoided_usd: number;
   };
 }
 
@@ -94,6 +98,7 @@ export const DEFAULT_POLICY: TenantPolicy = {
     buy_threshold: 0.7,
     semantic_enabled: false,
     semantic_threshold: 0.95,
+    max_monthly_estimated_avoided_usd: 50_000,
   },
 };
 
