@@ -20,6 +20,7 @@ import {
   renderDashboard,
   renderPotential,
   renderStatement,
+  renderObserverMeter,
 } from "../dashboard/render.js";
 import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
@@ -729,6 +730,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return meterSummary(ctx);
   });
 
+  // Task 011: consolidated Observer meter (actual vs potential vs savings,
+  // four ways, reconciling by construction) + Routing Readiness.
+  app.get("/v1/observer/meter", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const q = req.query as { from?: string; to?: string };
+    const { observerMeter } = await import("../meter/observer.js");
+    return observerMeter(ctx, deps.gateway.getPricing(), { from: q.from, to: q.to });
+  });
+
+  app.get("/v1/observer/routing-readiness", async (req) => {
+    await auth(req);
+    const ctx = await tenantCtx(req);
+    const q = req.query as { from?: string; to?: string };
+    const { routingReadiness } = await import("../meter/observer.js");
+    return routingReadiness(ctx, deps.gateway.getPricing(), { from: q.from, to: q.to });
+  });
+
   // WS4: attribution report (per user/team/module/month; energy+CO2e ranges)
   app.get("/v1/meter/report", async (req) => {
     await auth(req);
@@ -764,6 +783,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const { ctx, q, tenantId } = await dashAuth(req);
     const r = await meterReport(ctx, q.month);
     return reply.type("text/html").send(renderDashboard(r, tenantQ(tenantId, q, q.month)));
+  });
+
+  app.get("/dashboard/meter", async (req, reply) => {
+    const { ctx, q, tenantId } = await dashAuth(req);
+    const { observerMeter, routingReadiness } = await import("../meter/observer.js");
+    const m = await observerMeter(ctx, deps.gateway.getPricing(), { from: q.month ? `${q.month}-01` : undefined });
+    const rr = await routingReadiness(ctx, deps.gateway.getPricing(), {});
+    return reply.type("text/html").send(renderObserverMeter(m, rr.types, tenantQ(tenantId, q)));
   });
 
   app.get("/dashboard/potential", async (req, reply) => {

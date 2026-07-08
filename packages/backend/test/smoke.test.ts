@@ -2591,3 +2591,138 @@ test("R2: capture->acquire loop cannot inflate estimated savings past the monthl
   assert.ok((report.avoided_usd_by_basis.estimated ?? 0) <= 3000 + 1e-9); // clamped
   assert.ok(report.avoided_usd <= 3000 + 1e-9);
 });
+
+// ---------- task 011 (consolidated Observer meter + readiness + privacy) ----------
+
+test("task011 counts-not-content: schema rejects any prompt/output/content field", async () => {
+  const { interventionEventSchema } = await import("@circulara/schema");
+  const base = validEvent("00000000-0000-0000-0000-000000000000");
+  // a client trying to smuggle content -> strict schema REJECTS it
+  assert.throws(() => interventionEventSchema.parse({ ...base, prompt: "secret prompt text" }));
+  assert.throws(() => interventionEventSchema.parse({ ...base, output_text: "model said..." }));
+  assert.throws(() =>
+    interventionEventSchema.parse({ ...base, observer: { task_type: "x", latency_ms: 1, request_fp: null, cache_read_tokens: 0, routable: false, route_to_model: null, source_code: "..." } }),
+  );
+  // metadata-only observer block parses fine
+  const ok = interventionEventSchema.parse({
+    ...base,
+    observer: { task_type: "code-review", latency_ms: 1200, request_fp: "a".repeat(64), cache_read_tokens: 100, routable: true, route_to_model: "claude-haiku-4-5-20251001" },
+  });
+  assert.equal(ok.observer?.task_type, "code-review");
+});
+
+test("task011 Observer meter: four figures reconcile EXACTLY (actual - potential = savings)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "obs" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|obs" },
+    })
+  ).json() as { seat_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  const mk = (over: Record<string, unknown>) =>
+    ingestEvent(ctx, validEvent(seat_id, {
+      model_used: "claude-opus-4-8", model_requested: "claude-opus-4-8",
+      tokens: { input_counterfactual: 5000, output_counterfactual: 1000, input_actual: 5000, output_actual: 1000 },
+      ...over,
+    }));
+  // a routable opus call (route down to haiku) - saves $ AND energy (weights differ)
+  await mk({ observer: { task_type: "chat", latency_ms: 900, request_fp: null, cache_read_tokens: 0, routable: true, route_to_model: "claude-haiku-4-5-20251001" } });
+  // a non-routable call - no savings
+  await mk({ observer: { task_type: "reasoning", latency_ms: 5000, request_fp: null, cache_read_tokens: 0, routable: false, route_to_model: null } });
+  // two calls sharing a request_fp - the 2nd is a cacheable duplicate (fully avoidable)
+  await mk({ observer: { task_type: "chat", latency_ms: 800, request_fp: "f".repeat(64), cache_read_tokens: 0, routable: false, route_to_model: null } });
+  await mk({ observer: { task_type: "chat", latency_ms: 800, request_fp: "f".repeat(64), cache_read_tokens: 0, routable: false, route_to_model: null } });
+
+  const m = (
+    await app.inject({ method: "GET", url: "/v1/observer/meter", headers: { ...SEAT, ...th } })
+  ).json() as import("../src/meter/observer.js").ObserverMeter;
+
+  assert.equal(m.events, 4);
+  // THE GUARANTEE: every figure reconciles to the cent / token / mWh
+  const near = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
+  near(m.savings.usd, m.actual.usd - m.potential.usd);
+  near(m.savings.tokens, m.actual.tokens - m.potential.tokens);
+  near(m.savings.kwh.median, m.actual.kwh.median - m.potential.kwh.median);
+  near(m.savings.co2e.median, m.actual.co2e.median - m.potential.co2e.median);
+  // savings are real and positive (routing + dedupe both fired)
+  assert.ok(m.savings.usd > 0);
+  assert.ok(m.savings_source.routing_usd > 0 && m.savings_source.dedupe_usd > 0);
+  near(m.savings.usd, m.savings_source.routing_usd + m.savings_source.dedupe_usd);
+  // routing genuinely moved energy (opus weight 3.0 -> haiku 0.5), so carbon saved > 0
+  assert.ok(m.savings.co2e.median > 0);
+  // dedupe: only ONE of the two identical calls counts toward potential; tokens saved = the dup's tokens (6000)
+  assert.ok(m.savings.tokens >= 6000); // at least the deduped call's tokens
+  // drilldowns present
+  assert.ok(m.by_user.find((u) => u.key === "sso|user1")); // validEvent stamps user_id
+  assert.ok(m.by_task_type.find((x) => x.key === "chat" && x.savings_usd > 0));
+  assert.ok(m.cost_method.includes("published provider rates"));
+  assert.equal(m.carbon_confidence, "Estimated");
+});
+
+test("task011 cost method: cache reads priced at the cached rate, not full", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "cache$" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|c" },
+    })
+  ).json() as { seat_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  // all 1000 input tokens are cache reads -> billed at 10% of input, not 100%
+  await ingestEvent(ctx, validEvent(seat_id, {
+    model_used: "claude-haiku-4-5-20251001", model_requested: "claude-haiku-4-5-20251001",
+    tokens: { input_counterfactual: 1000, output_counterfactual: 0, input_actual: 1000, output_actual: 0 },
+    observer: { task_type: "chat", latency_ms: 1, request_fp: null, cache_read_tokens: 1000, routable: false, route_to_model: null },
+  }));
+  const m = (
+    await app.inject({ method: "GET", url: "/v1/observer/meter", headers: { ...SEAT, ...th } })
+  ).json() as import("../src/meter/observer.js").ObserverMeter;
+  // 1000 input @ 1e-6 would be 0.001 at full; cached at 10% -> 0.0001
+  assert.ok(Math.abs(m.actual.usd - 0.0001) < 1e-9);
+});
+
+test("task011 Routing Readiness: climbs with evidence, flips ready at threshold", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "ready" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|r" },
+    })
+  ).json() as { seat_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  const one = (routable: boolean) =>
+    ingestEvent(ctx, validEvent(seat_id, {
+      model_used: "claude-opus-4-8", model_requested: "claude-opus-4-8",
+      observer: { task_type: "summarize", latency_ms: 1, request_fp: null, cache_read_tokens: 0, routable, route_to_model: routable ? "claude-haiku-4-5-20251001" : null },
+    }));
+  // 10 routable so far - below threshold (30) -> not ready
+  for (let i = 0; i < 10; i++) await one(true);
+  type RR = { threshold: number; types: { task_type: string; routable_observations: number; evidence: number; ready: boolean; projected_saving_usd: number }[] };
+  let rr = (
+    await app.inject({ method: "GET", url: "/v1/observer/routing-readiness", headers: { ...SEAT, ...th } })
+  ).json() as RR;
+  let sum = rr.types.find((x) => x.task_type === "summarize")!;
+  assert.equal(sum.routable_observations, 10);
+  assert.ok(sum.evidence > 0 && sum.evidence < 1);
+  assert.equal(sum.ready, false);
+  assert.ok(sum.projected_saving_usd > 0);
+  // push past the threshold -> ready flips true
+  for (let i = 0; i < 25; i++) await one(true);
+  rr = (
+    await app.inject({ method: "GET", url: "/v1/observer/routing-readiness", headers: { ...SEAT, ...th } })
+  ).json() as RR;
+  sum = rr.types.find((x) => x.task_type === "summarize")!;
+  assert.ok(sum.routable_observations >= 30);
+  assert.equal(sum.evidence, 1);
+  assert.equal(sum.ready, true);
+});

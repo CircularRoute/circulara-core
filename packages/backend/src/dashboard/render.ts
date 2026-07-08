@@ -90,6 +90,7 @@ footer.band .fig{color:#fff}
 function page(title: string, tenantQ: string, active: string, body: string): string {
   const tabs = [
     ["dashboard", "Dashboard", `/dashboard${tenantQ}`],
+    ["meter", "Meter", `/dashboard/meter${tenantQ}`],
     ["potential", "Savings potential", `/dashboard/potential${tenantQ}`],
     ["statement", "Monthly statement", `/dashboard/statement${tenantQ}`],
   ]
@@ -238,4 +239,49 @@ ${breakdown("By module", r.by_module)}
 ESG-ready export: <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}">JSON</a> - <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}&format=csv">CSV</a></p>
 `;
   return page(`Statement ${month}`, tenantQ, "statement", body);
+}
+
+/** Task 011 - the consolidated Observer meter: actual vs potential, four ways,
+ * reconciling by construction. Ledger Light tokens; carbon always a range. */
+export function renderObserverMeter(
+  m: import("../meter/observer.js").ObserverMeter,
+  readiness: import("../meter/observer.js").ReadinessRow[],
+  tenantQ: string,
+): string {
+  const kwh = (r: { low: number; high: number }) =>
+    `${(r.low).toFixed(r.low < 1 ? 3 : 1)} - ${(r.high).toFixed(r.high < 1 ? 3 : 1)} kWh`;
+  const threeCol = (label: string, a: string, p: string, s: string) => `
+    <tr><td>${esc(label)}</td><td class="n">${a}</td><td class="n">${p}</td><td class="n" style="color:var(--green-deep)">${s}</td></tr>`;
+  const readyRows = readiness
+    .map(
+      (r) => `<tr><td>${esc(r.task_type)}</td><td class="n">${num(r.observations)}</td>
+      <td class="n">${num(r.routable_observations)}</td>
+      <td class="n" style="color:var(--green-deep)">${usd(r.projected_saving_usd)}</td>
+      <td class="n">${Math.round(r.evidence * 100)}%</td>
+      <td>${r.ready ? '<span class="conf">ready</span>' : '<span class="conf blue">learning</span>'}</td></tr>`,
+    )
+    .join("");
+  const body = `
+<div class="card" style="margin-bottom:24px">
+  <div class="label">Total savings (${m.events} calls observed)${m.from ? ` since ${esc(m.from)}` : ""}</div>
+  <div class="fig green">${usd(m.savings.usd)}</div>
+  <div class="fig" style="font-size:16px;color:var(--ink-2)">${num(Math.round(m.savings.tokens))} tokens &middot; <span class="range">${kwh(m.savings.kwh)}</span> &middot; <span class="range">${co2Range(m.savings.co2e)}</span></div>
+  <div class="conf blue">the four figures come from the same avoided work; carbon ${esc(m.carbon_confidence)}</div>
+</div>
+<h2 class="section">Actual vs potential (with Circulara)</h2>
+<table><thead><tr><th></th><th class="n">Actual (as run)</th><th class="n">Potential (optimized)</th><th class="n">Savings</th></tr></thead><tbody>
+${threeCol("Spend", usd(m.actual.usd), usd(m.potential.usd), usd(m.savings.usd))}
+${threeCol("Tokens", num(Math.round(m.actual.tokens)), num(Math.round(m.potential.tokens)), num(Math.round(m.savings.tokens)))}
+${threeCol("Energy", kwh(m.actual.kwh), kwh(m.potential.kwh), kwh(m.savings.kwh))}
+${threeCol("Carbon", co2Range(m.actual.co2e), co2Range(m.potential.co2e), co2Range(m.savings.co2e))}
+</tbody></table>
+<p class="note">Savings from routing simple tasks to a cheaper model: ${usd(m.savings_source.routing_usd)} &middot; from detectable duplicate/cacheable calls: ${usd(m.savings_source.dedupe_usd)}. Actual - potential = savings, exactly, on every line.</p>
+<h2 class="section">Routing readiness (learned from your traffic)</h2>
+<table><thead><tr><th>Task type</th><th class="n">Observed</th><th class="n">Routable</th><th class="n">Projected saving</th><th class="n">Evidence</th><th>Status</th></tr></thead><tbody>
+${readyRows || '<tr><td colspan="6" style="color:var(--ink-3)">no task types observed yet</td></tr>'}
+</tbody></table>
+<p class="note">${esc(m.cost_method)}</p>
+<div class="banner" style="margin-top:24px">Counts, not content - Observer meters your AI spend without reading your prompts, outputs, or code.</div>
+`;
+  return page("Meter", tenantQ, "meter", body);
 }

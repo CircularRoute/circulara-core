@@ -70,3 +70,27 @@ export const CARBON_V1: CarbonCoefficients = {
     source: "Typical datacenter PUE range",
   },
 };
+
+/**
+ * Task 011 - per-model relative energy weight. A smaller/cheaper model burns
+ * less energy PER TOKEN, so routing down genuinely moves the energy + carbon
+ * figures (not only dollars). Weight 1.0 = the reference short-query class in
+ * energy_per_token_wh; reasoning/large models weigh more. Model unknown ->
+ * 1.0 (neutral: routing shows no energy delta rather than a fabricated one).
+ *
+ * These are BENCHMARKED order-of-magnitude class weights (model size tiers),
+ * versioned + reviewed under the same human-approves-diffs discipline. The
+ * meter labels routing-derived energy/carbon "Estimated" accordingly.
+ */
+export const MODEL_ENERGY_WEIGHT: { match: RegExp; weight: number }[] = [
+  { match: /opus|gpt-4\.?5|o3|o1|reasoning|-405b|-70b/i, weight: 3.0 }, // large / reasoning
+  { match: /sonnet|gpt-4o(?!-mini)|gpt-4-turbo|-32b/i, weight: 1.6 }, // mid
+  { match: /haiku|mini|small|flash|-8b|-7b|embedding/i, weight: 0.5 }, // small
+];
+
+export function modelEnergyWeight(model: string | null | undefined): number {
+  if (!model) return 1.0;
+  for (const { match, weight } of MODEL_ENERGY_WEIGHT)
+    if (match.test(model)) return weight;
+  return 1.0; // unknown class: neutral
+}

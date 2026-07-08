@@ -47,6 +47,15 @@ export interface Capture {
   callId?: string;
   sessionId?: string | null;
   ts?: string;
+  /** task 011 - Observer metadata (counts, not content); null when absent */
+  observer?: {
+    task_type: string | null;
+    latency_ms: number | null;
+    request_fp: string | null;
+    cache_read_tokens: number;
+    routable: boolean;
+    route_to_model: string | null;
+  } | null;
 }
 
 /** Gateway/in-process path: build + normalize + price + append. */
@@ -106,6 +115,7 @@ export async function recordCapture(
     cache_ref: null,
     sourcing: null,
     catalog_reserved: null,
+    observer: cap.observer ?? null,
   };
   return appendNormalized(ctx, deps, ev);
 }

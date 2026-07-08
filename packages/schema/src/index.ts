@@ -59,6 +59,30 @@ export const interventionEventSchema = z
     model_requested: z.string().nullable().default(null),
     model_used: z.string().nullable().default(null),
 
+    // Observer metadata (task 011) - COUNTS, NOT CONTENT. Every field here is
+    // a number, an enum-ish label, or a client-computed HASH. There is no
+    // field anywhere in this schema for prompt text, output text, or file
+    // content, by design (brief §2). The schema is .strict() (below), so a
+    // client that tries to send a `prompt`/`content`/`text` field is REJECTED.
+    observer: z
+      .object({
+        task_type: z.string().max(64).nullable().default(null), // e.g. "code-review", "chat"
+        latency_ms: z.number().int().nonnegative().nullable().default(null),
+        // sha256 hash of the request, computed CLIENT-SIDE. A count/identity,
+        // never content - lets the meter detect duplicate/cacheable calls
+        // without ever seeing the prompt.
+        request_fp: z.string().length(64).nullable().default(null),
+        cache_read_tokens: z.number().int().nonnegative().default(0),
+        // "this call was simple enough a lower tier would match" - a signal
+        // (metadata heuristic or explicit host flag), never derived from content
+        routable: z.boolean().default(false),
+        // the cheaper same-provider model this call could route to (if routable)
+        route_to_model: z.string().nullable().default(null),
+      })
+      .strict()
+      .nullable()
+      .default(null),
+
     tokens: z.object({
       input_counterfactual: z.number().int().nonnegative(),
       output_counterfactual: z.number().int().nonnegative(),
@@ -156,6 +180,10 @@ export const interventionEventSchema = z
       .nullable()
       .default(null),
   })
+  // COUNTS-NOT-CONTENT enforcement (brief §2, task 011): the event object is
+  // STRICT - any unknown key (a client trying to smuggle prompt/output/code
+  // text) is rejected at intake, not silently stored.
+  .strict()
   .superRefine((ev, ctx) => {
     const sourcingTypes = new Set([
       "reuse_commons",
