@@ -285,8 +285,9 @@ export async function handleGatewayMessage(
         model_requested: model,
         model_used: finalModel,
         tokens: {
-          input_counterfactual: usage.input,
-          output_counterfactual: usage.output,
+          // QA BL3: MARGINAL tokens only - each token/carbon unit once
+          input_counterfactual: stage.tokens_avoided_input,
+          output_counterfactual: stage.tokens_avoided_output,
           input_actual: 0,
           output_actual: 0,
         },
@@ -297,6 +298,7 @@ export async function handleGatewayMessage(
           currency: "USD",
           pricing_source: "meter",
           pricing_version: pricing?.pricing_version ?? "unpriced",
+          basis: stage.basis, // QA MJ6
         },
         energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
         carbon: {

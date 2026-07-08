@@ -171,6 +171,14 @@ export async function runClearance(
     }
   }
 
+  // QA re-review M1-absent: with NO classifier configured, content is
+  // unclassified - it may share internally but can never reach marketable
+  // without a classification pass.
+  if (!classifier) {
+    maxTier = minTier(maxTier, "org");
+    reasons.push("no classifier configured - unclassified content caps at org (never marketable)");
+  }
+
   // step 4: policy engine - admin rules on risk categories, most restrictive wins
   if (classification && classification.risk_category !== "none") {
     const rule = policy.clearance.rules.find(
@@ -183,8 +191,10 @@ export async function runClearance(
     );
   }
 
-  // step 3: license/provenance - unknown external license NEVER marketable
-  const external = input.provenance.source !== "internal" && input.provenance.producer !== "org";
+  // step 3: license/provenance - unknown external license NEVER marketable.
+  // QA MJ1: the signal is the SOURCE; producer is an authenticated subject
+  // now and no longer a spoofable "org" string.
+  const external = input.provenance.source !== "internal";
   if (external && input.license.redistributable !== true) {
     maxTier = minTier(maxTier, "org");
     reasons.push("external provenance without verified redistributable license - capped at org, never marketable");

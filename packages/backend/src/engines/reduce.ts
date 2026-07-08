@@ -219,6 +219,12 @@ export interface StageSaving {
   technique: AppliedPass["technique"];
   module: "reduce";
   avoided_usd: number;
+  /** QA BL3: MARGINAL avoided tokens only - what this stage alone kept from
+   * being processed. Routing avoids $ but zero tokens; prompt-cache reads
+   * still ran the compute, so zero carbon-relevant tokens. */
+  tokens_avoided_input: number;
+  tokens_avoided_output: number;
+  basis: "measured" | "estimated" | "upper_bound"; // QA MJ6
   detail: string;
 }
 
@@ -236,38 +242,61 @@ export function stageSavings(
   const out: StageSaving[] = [];
   for (const a of applied) {
     let avoided = 0;
+    let tokIn = 0;
+    let tokOut = 0;
+    let basis: StageSaving["basis"] = "measured";
     switch (a.technique) {
       case "route": {
-        // measured: same tokens priced at the requested vs routed model
+        // measured $: same tokens priced at requested vs routed model.
+        // BL3: routing avoids ZERO tokens - the tokens all ran.
         const asRequested = priceTokens(pricing, a.originalModel!, usage.input, usage.output).usd;
         const asRouted = priceTokens(pricing, finalModel, usage.input, usage.output).usd;
         avoided = Math.max(0, asRequested - asRouted);
+        basis = "measured";
         break;
       }
       case "compress":
       case "tool_prune": {
-        // estimated: chars removed -> input tokens not sent
-        avoided = priceTokens(pricing, finalModel, estTokens(a.charsSaved), 0).usd;
+        // estimated: chars removed -> input tokens genuinely not processed
+        tokIn = estTokens(a.charsSaved);
+        avoided = priceTokens(pricing, finalModel, tokIn, 0).usd;
+        basis = "estimated";
         break;
       }
       case "cap": {
-        // conservative: only counts if the response actually hit the cap
+        // QA MJ3: (originalMax - output) is a MAXIMUM, not a measurement.
+        // Book the phantom tokens as an upper bound WITHOUT dollars - the
+        // dollar statement never carries speculative output.
         if (usage.stop_reason === "max_tokens" && a.originalMaxTokens) {
           const savedOut = a.originalMaxTokens - usage.output;
-          if (savedOut > 0)
-            avoided = priceTokens(pricing, finalModel, 0, savedOut).usd;
+          if (savedOut > 0) {
+            tokOut = savedOut;
+            avoided = 0;
+            basis = "upper_bound";
+          }
         }
         break;
       }
       case "prompt_cache": {
-        // measured: provider-reported cache reads at ~90% input discount
+        // measured $: provider-reported cache reads at ~90% input discount.
+        // BL3: cached reads still ran the compute - zero tokens avoided for
+        // the energy/carbon chain.
         const read = usage.cache_read ?? 0;
         avoided = priceTokens(pricing, finalModel, read, 0).usd * 0.9;
+        basis = "measured";
         break;
       }
     }
-    if (avoided > 0)
-      out.push({ technique: a.technique, module: "reduce", avoided_usd: avoided, detail: a.detail });
+    if (avoided > 0 || tokIn > 0 || tokOut > 0)
+      out.push({
+        technique: a.technique,
+        module: "reduce",
+        avoided_usd: avoided,
+        tokens_avoided_input: tokIn,
+        tokens_avoided_output: tokOut,
+        basis,
+        detail: a.detail,
+      });
   }
   return out;
 }

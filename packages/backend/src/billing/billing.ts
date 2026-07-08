@@ -88,14 +88,18 @@ export async function computeInvoice(
   const price = PLAN_PRICES[cfg.plan][cfg.cycle];
   const subtotal = seats * price;
 
-  // coupon: 30% x 12 months from redemption, then silently expires
+  // coupon: EXACTLY 12 billing periods starting at the redemption month
+  // (QA MJ7: the old date comparison granted a 13th month)
   let coupon: Invoice["coupon"] = null;
   let discount = 0;
   if (cfg.coupon?.code === EARLY_ADOPTER.code) {
     const redeemed = new Date(cfg.coupon.redeemed_at);
-    const expires = new Date(redeemed);
-    expires.setUTCMonth(expires.getUTCMonth() + EARLY_ADOPTER.months);
-    if (new Date(`${month}-01T00:00:00Z`) < expires) {
+    const idx = (d: Date) => d.getUTCFullYear() * 12 + d.getUTCMonth();
+    const periodsUsed =
+      idx(new Date(`${month}-01T00:00:00Z`)) -
+      idx(new Date(Date.UTC(redeemed.getUTCFullYear(), redeemed.getUTCMonth(), 1)));
+    const expires = new Date(Date.UTC(redeemed.getUTCFullYear(), redeemed.getUTCMonth() + EARLY_ADOPTER.months, 1));
+    if (periodsUsed >= 0 && periodsUsed < EARLY_ADOPTER.months) {
       coupon = {
         code: EARLY_ADOPTER.code,
         discount_pct: EARLY_ADOPTER.discount * 100,
@@ -128,7 +132,9 @@ export async function computeInvoice(
  * public and time-boxed - the only discount path that exists.
  */
 export async function redeemEarlyAdopter(
-  controlDb: { query: (sql: string, params?: unknown[]) => Promise<{ rows: { n?: number }[] }> },
+  controlDb: {
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: { n?: number }[]; affectedRows?: number }>;
+  },
   ctx: TenantContext,
 ): Promise<{ redeemed: boolean; reason?: string; slot?: number }> {
   const cfg = await getBilling(ctx);
@@ -137,21 +143,24 @@ export async function redeemEarlyAdopter(
     `CREATE TABLE IF NOT EXISTS early_adopter_redemptions (
        tenant_id text PRIMARY KEY, redeemed_at timestamptz NOT NULL DEFAULT now())`,
   );
+  // QA MJ7: the cap check and the insert are ONE guarded statement - two
+  // concurrent redemptions at n=9 cannot both pass.
+  const ins = await controlDb.query(
+    `INSERT INTO early_adopter_redemptions (tenant_id)
+     SELECT $1 WHERE (SELECT count(*) FROM early_adopter_redemptions) < ${EARLY_ADOPTER.max_orgs}
+     ON CONFLICT (tenant_id) DO NOTHING`,
+    [ctx.tenantId],
+  );
+  if ((ins.affectedRows ?? 0) === 0)
+    return { redeemed: false, reason: `early-adopter program is full (first ${EARLY_ADOPTER.max_orgs} orgs)` };
   const count = await controlDb.query(
     `SELECT count(*)::int AS n FROM early_adopter_redemptions`,
-  );
-  const n = count.rows[0].n ?? 0;
-  if (n >= EARLY_ADOPTER.max_orgs)
-    return { redeemed: false, reason: `early-adopter program is full (first ${EARLY_ADOPTER.max_orgs} orgs)` };
-  await controlDb.query(
-    `INSERT INTO early_adopter_redemptions (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`,
-    [ctx.tenantId],
   );
   await setBilling(ctx, {
     ...cfg,
     coupon: { code: EARLY_ADOPTER.code, redeemed_at: new Date().toISOString() },
   });
-  return { redeemed: true, slot: n + 1 };
+  return { redeemed: true, slot: count.rows[0].n ?? undefined };
 }
 
 /**

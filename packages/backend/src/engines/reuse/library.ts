@@ -32,7 +32,11 @@ import {
 export interface CaptureInput {
   spec: AssetSpec;
   bytes: Buffer;
-  provenance: { producer: string; source: string; build_method: string };
+  /** QA MJ1: producer is DERIVED from the authenticated identity by the API
+   * route; a caller-declared name is recorded separately and trusted for
+   * nothing. */
+  provenance: { producer: string; declared_producer?: string; source: string; build_method: string };
+  license_evidence?: string | null; // required for any marketable promotion (MJ1)
   license?: { redistributable: boolean; spdx_or_terms: string | null };
   parent_fp?: string | null; // derivative chain (AD8)
   price_usd?: number; // what it cost to build (reuse-side counterfactual basis)
@@ -71,6 +75,19 @@ export async function captureAsset(
     },
     classifier ?? null,
   );
+  // QA BL4: derivatives inherit the parent chain's license (D14). A
+  // non-redistributable ancestry caps the verdict at org - NEVER marketable -
+  // regardless of what this asset self-declares.
+  if (input.parent_fp) {
+    const parentOk = await effectiveRedistributable(ctx, input.parent_fp);
+    if (!parentOk && !verdict.blocked) {
+      const { minTier } = await import("../clearance/pipeline.js");
+      verdict.max_tier = minTier(verdict.max_tier, "org");
+      verdict.reasons.push(
+        "derivative of a non-redistributable (or unverifiable) parent chain - capped at org, never marketable (D14/BL4)",
+      );
+    }
+  }
   if (verdict.blocked) {
     await auditLog(ctx, {
       exact_fp: null,
@@ -118,6 +135,12 @@ export async function captureAsset(
       JSON.stringify(verdict),
     ],
   );
+  if (input.license_evidence) {
+    await ctx.db.query(
+      `UPDATE assets SET license_evidence = $1 WHERE exact_fp = $2 AND license_evidence IS NULL`,
+      [input.license_evidence, fp],
+    );
+  }
   // QA M3: on fingerprint collision the INSERT is a no-op - return the verdict
   // that is actually STORED (and therefore enforced), never a fresh one that
   // may differ under a changed policy.
@@ -242,14 +265,20 @@ export async function libraryLookup(
   return null;
 }
 
-/** Walk the parent_fp chain; the MOST RESTRICTIVE license on the path wins (AD8). */
+/** Walk the parent_fp chain; the MOST RESTRICTIVE license on the path wins
+ * (AD8). QA BL4: the walk FAILS CLOSED - depth exhaustion and cycles both
+ * return NOT redistributable; unknown ancestry too. */
 export async function effectiveRedistributable(
   ctx: TenantContext,
   fp: string,
 ): Promise<boolean> {
   let current: string | null = fp;
+  const seen = new Set<string>();
   let hops = 0;
-  while (current && hops < 20) {
+  while (current) {
+    if (seen.has(current)) return false; // cycle -> fail closed (BL4)
+    if (hops >= 20) return false; // depth exhaustion -> fail closed (BL4)
+    seen.add(current);
     const r: { rows: { license: { redistributable?: boolean }; parent_fp: string | null }[] } =
       await ctx.db.query(
         `SELECT license, parent_fp FROM assets WHERE exact_fp = $1`,

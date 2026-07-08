@@ -31,6 +31,10 @@ export interface AuthResult {
   role?: Role;
   subject?: string; // SSO sub or agent seat_id
   kind?: "oidc" | "agent_token" | "dev";
+  /** QA BL1: the tenant this credential is BOUND to. null = unbound, which is
+   * acceptable ONLY in dev mode; oidc tokens without a tenant claim are
+   * rejected at the tenant boundary (fail closed). */
+  tenant_id?: string | null;
   reason?: string;
 }
 
@@ -39,6 +43,7 @@ export interface AuthConfig {
   issuer?: string;
   audience?: string;
   adminClaim?: string; // claim name marking admins (default circulara_role)
+  tenantClaim?: string; // claim naming the bound tenant (default circulara_tenant)
   agentTokenSecret: Buffer; // HS256 secret for agent seat tokens
   agentTokenTtlSeconds?: number;
   /** test seam: verification key overriding the remote JWKS */
@@ -68,9 +73,9 @@ export class Authenticator {
     // dev mode only: static tokens
     if (this.cfg.mode === "dev") {
       if (token === DEV_ADMIN_TOKEN)
-        return { ok: true, role: "admin", subject: "dev-admin", kind: "dev" };
+        return { ok: true, role: "admin", subject: "dev-admin", kind: "dev", tenant_id: null };
       if (token === DEV_SEAT_TOKEN)
-        return { ok: true, role: "seat", subject: "dev-seat", kind: "dev" };
+        return { ok: true, role: "seat", subject: "dev-seat", kind: "dev", tenant_id: null };
     }
 
     // agent seat token (HS256, our own mint)
@@ -85,11 +90,14 @@ export class Authenticator {
           ? await jwtVerify(token, this.cfg.oidcKeyOverride, opts)
           : await jwtVerify(token, this.jwks!, opts);
         const roleClaim = payload[this.cfg.adminClaim ?? "circulara_role"];
+        const tenantClaim = payload[this.cfg.tenantClaim ?? "circulara_tenant"];
         return {
           ok: true,
           role: roleClaim === "admin" ? "admin" : "seat",
           subject: String(payload.sub ?? ""),
           kind: "oidc",
+          // BL1: admin means admin OF THIS TENANT, never of all tenants
+          tenant_id: typeof tenantClaim === "string" ? tenantClaim : null,
         };
       } catch (e) {
         return { ok: false, reason: `oidc: ${(e as Error).message}` };
@@ -122,6 +130,8 @@ export class Authenticator {
         role: "seat",
         subject: String(payload.sub),
         kind: "agent_token",
+        // BL1: the tenant_id claim minted into the token is BINDING
+        tenant_id: String((payload as JWTPayload & { tenant_id?: string }).tenant_id ?? "") || null,
       };
     } catch {
       return { ok: false };

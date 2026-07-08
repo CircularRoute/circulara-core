@@ -66,11 +66,41 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       throw Object.assign(new Error("x-tenant-id header required"), {
         statusCode: 400,
       });
+    // QA BL1: a credential is BOUND to its tenant. The header selects the
+    // tenant DB, but the token must agree. Unbound tokens are dev-mode only;
+    // an oidc token without a tenant claim fails CLOSED here.
+    const authRes = await deps.auth.verify(req.headers.authorization);
+    if (authRes.ok) {
+      if (authRes.tenant_id != null && authRes.tenant_id !== tenantId)
+        throw Object.assign(
+          new Error("credential is bound to a different tenant (BL1 tenant isolation)"),
+          { statusCode: 403 },
+        );
+      if (authRes.tenant_id == null && authRes.kind === "oidc")
+        throw Object.assign(
+          new Error("oidc token carries no tenant claim - tenant routes fail closed (BL1)"),
+          { statusCode: 403 },
+        );
+    }
+    let ctx;
     try {
-      return await deps.control.contextFor(tenantId);
+      ctx = await deps.control.contextFor(tenantId);
     } catch {
       throw Object.assign(new Error("unknown tenant"), { statusCode: 404 });
     }
+    // QA MJ8: agent tokens re-check the seat is STILL active, so
+    // deprovisioning revokes before TTL expiry.
+    if (authRes.ok && authRes.kind === "agent_token" && authRes.subject) {
+      const alive = await ctx.db.query(
+        `SELECT 1 FROM seats WHERE seat_id = $1 AND active`,
+        [authRes.subject],
+      );
+      if (alive.rows.length === 0)
+        throw Object.assign(new Error("agent seat deprovisioned - token revoked (MJ8)"), {
+          statusCode: 401,
+        });
+    }
+    return ctx;
   };
 
   const adminOnly = async (req: FastifyRequest): Promise<void> => {
@@ -276,6 +306,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       });
     const policy = await getPolicy(ctx);
     const classifier = deps.classifierFor ? await deps.classifierFor(ctx) : null;
+    const authRes = await deps.auth.verify(req.headers.authorization);
     const res = await captureAsset(
       ctx,
       deps.objects,
@@ -283,8 +314,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       {
         spec: b.spec,
         bytes: Buffer.from(b.content, "utf8"),
-        provenance: b.provenance,
+        // QA MJ1: producer = the AUTHENTICATED identity; the caller's claim is
+        // recorded as declared_producer and trusted for nothing.
+        provenance: {
+          producer: authRes.subject ?? "unknown",
+          declared_producer: b.provenance.producer,
+          source: b.provenance.source,
+          build_method: b.provenance.build_method,
+        },
         license: b.license,
+        license_evidence: (b as { license_evidence?: string }).license_evidence ?? null,
         parent_fp: b.parent_fp,
         price_usd: b.price_usd,
         schema_json: b.schema_json,
@@ -321,9 +360,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       return reply.status(409).send({ error: `already ${row.rows[0].status}` });
     const p = row.rows[0];
     const status = decision === "approve" ? "approved" : "rejected";
+    const approvalAuth = await deps.auth.verify(req.headers.authorization);
     await ctx.db.query(
       `UPDATE purchase_approvals SET status = $1, approver = $2, decided_at = now() WHERE proposal_id = $3`,
-      [status, b.approver, proposalId],
+      [status, `${b.approver} [auth:${approvalAuth.subject ?? "unknown"}]`, proposalId], // MJ2
     );
     const seat = await seatRefFor(ctx, p.requested_by_seat);
     const pricing = deps.gateway.getPricing();
@@ -435,6 +475,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // ---- wave 6: sharing-tier promotion + audit trail (§6 steps 5-6) ----
   app.post("/v1/assets/:fp/promote", async (req, reply) => {
     const role = await auth(req);
+    const authRes = await deps.auth.verify(req.headers.authorization); // MJ2: audited subject
     const ctx = await tenantCtx(req);
     const { fp } = req.params as { fp: string };
     const b = req.body as { to_tier?: string; approver?: string };
@@ -458,8 +499,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       await auditLog(ctx, {
         exact_fp: fp,
         action: "promote_denied",
-        actor: b?.approver ?? "unnamed",
-        detail: { to_tier: to, reason },
+        actor: authRes.subject ?? "unknown", // MJ2: the AUTHENTICATED subject
+        detail: { to_tier: to, reason, approver_declared: b?.approver ?? null },
       });
       return reply.status(status).send({ error: reason });
     };
@@ -467,12 +508,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const cap = (asset.clearance?.max_tier ?? "org") as (typeof TIER_ORDER)[number];
     if (minTier(to, cap) !== to)
       return deny(`clearance pipeline capped this asset at '${cap}' - promotion to '${to}' refused`);
-    // marketable: named human, ALWAYS + license must be verifiably redistributable
+    // marketable: named human, ALWAYS + license verifiably redistributable
+    // THROUGH THE WHOLE PARENT CHAIN (QA BL4) + recorded evidence (QA MJ1)
     if (to === "marketable") {
       if (!b?.approver)
         return deny("promotion to marketable ALWAYS requires a named human approver - no exceptions (§6 step 5)", 400);
       if (asset.license?.redistributable !== true)
         return deny("marketable requires a verifiably redistributable license");
+      const { effectiveRedistributable } = await import("../engines/reuse/library.js");
+      if (!(await effectiveRedistributable(ctx, fp)))
+        return deny(
+          "marketable requires the ENTIRE parent chain to be verifiably redistributable - derivative license inheritance (D14/BL4), walk fails closed",
+        );
+      const ev = await ctx.db.query<{ license_evidence: string | null }>(
+        `SELECT license_evidence FROM assets WHERE exact_fp = $1`,
+        [fp],
+      );
+      if (!ev.rows[0]?.license_evidence)
+        return deny("marketable requires recorded license evidence (MJ1)");
     }
     // org: auto-approve only if policy says so; otherwise a named human
     if (to === "org") {
@@ -486,8 +539,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await auditLog(ctx, {
       exact_fp: fp,
       action: "promote",
-      actor: b?.approver ?? "policy:auto_approve_org",
-      detail: { from: asset.sharing_tier, to },
+      actor: authRes.subject ?? "unknown", // MJ2: the AUTHENTICATED subject
+      detail: { from: asset.sharing_tier, to, approver_declared: b?.approver ?? "policy:auto_approve_org" },
     });
     return { exact_fp: fp, sharing_tier: to, approver: b?.approver ?? null };
   });
@@ -621,21 +674,23 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const role = await auth(req);
     const ctx = await tenantCtx(req);
     const ev = interventionEventSchema.parse(req.body);
-    // QA B1 (meter forgery): the only event type a SEAT can originate is
-    // observe (which books avoided_usd = 0 by construction and is re-priced
-    // server-side regardless of what the client claims). Non-observe events
-    // are engine-born in-process; the API accepts them from ADMIN only
-    // (backfill/import - the org lying to itself is its own problem, a seat
-    // inflating the org's savings statement is ours).
-    if (role !== "admin" && ev.intervention_type !== "observe")
+    // QA BL2 (meter forgery): this route accepts OBSERVE events only, from
+    // anyone. Every intervention event (compress/route/reuse/purchase/...)
+    // is engine-born in-process and NEVER arrives through the API - there is
+    // no client input path to the savings number, full stop. Observe events
+    // are unconditionally re-priced server-side; client cost fields and
+    // pricing_source claims are ignored.
+    void role;
+    if (ev.intervention_type !== "observe")
       return reply.status(403).send({
-        error: "seats may only submit observe events; intervention events are engine-originated (QA B1)",
+        error:
+          "this route accepts observe events only; intervention events are engine-originated in-process (QA BL2)",
       });
     const res = await normalizeAndAppend(
       ctx,
       { getPricing: deps.gateway.getPricing },
       ev,
-      /* fromClient */ role !== "admin",
+      /* fromClient */ true, // ALWAYS re-price client events
     );
     return reply.status(201).send(res);
   });

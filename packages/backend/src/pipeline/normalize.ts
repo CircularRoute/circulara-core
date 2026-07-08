@@ -127,10 +127,11 @@ export async function normalizeAndAppend(
   // client cost is a hint, never the booked number. NON-observe events carry
   // engine-computed savings math (reuse: build-cost vs price; sourcing:
   // subscription math) that is NOT reconstructible from tokens - those events
-  // come from Circulara's own engines (in-process, meter-priced at source in
-  // waves 3+) and pass through here unmodified. Enforced boundary: the only
-  // event type a CLIENT can originate that books dollars is observe, and
-  // observe books avoided_usd = 0 by construction.
+  // come from Circulara's own engines (in-process, meter-priced at source)
+  // and pass through here unmodified. The boundary is enforced at the API
+  // route (server.ts /v1/events): the route rejects every non-observe event
+  // and always passes fromClient=true, so client cost fields are NEVER
+  // booked as sent (QA BL2).
   if (
     normalized.intervention_type === "observe" &&
     (fromClient || normalized.cost.pricing_source !== "meter")

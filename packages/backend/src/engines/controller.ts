@@ -152,6 +152,9 @@ export async function emitBlockEvent(
       currency: "USD",
       pricing_source: "meter",
       pricing_version: pricing?.pricing_version ?? "unpriced",
+      // QA MJ4: assumes the full requested output and that blocked work is
+      // truly avoided (it is often retried, i.e. deferred) - upper bound.
+      basis: "upper_bound",
     },
     energy: { avoided_kwh: 0, method: "EcoLogits-class", confidence: "Estimated" },
     carbon: {

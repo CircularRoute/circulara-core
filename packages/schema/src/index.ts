@@ -73,6 +73,11 @@ export const interventionEventSchema = z
       currency: z.literal("USD"),
       pricing_source: z.string(),
       pricing_version: z.string().min(1), // registry snapshot ref (WS6)
+      // QA MJ6 (additive): HOW the avoided figure was derived. measured =
+      // provider-reported deltas; estimated = char/token estimates or
+      // client-declared build costs; upper_bound = worst-case assumptions
+      // (blocked calls, cap truncation). Absent = measured-or-zero legacy.
+      basis: z.enum(["measured", "estimated", "upper_bound"]).optional(),
     }),
 
     energy: z.object({

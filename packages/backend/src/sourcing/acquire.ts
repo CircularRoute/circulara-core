@@ -123,11 +123,10 @@ function externalPassesGates(
     return false; // schema demanded but the candidate declares none: never "about the same thing"
   if (
     spec.asset_type === 3 &&
-    candidate.freshness != null &&
     spec.freshness_bucket !== "static" &&
     candidate.freshness !== spec.freshness_bucket
   )
-    return false; // freshness gate for bucketed types
+    return false; // freshness gate: bucketed demand needs a MATCHING declared freshness (null fails closed)
   if (
     constraints.min_quality_uses != null &&
     (candidate.num_uses ?? 0) < constraints.min_quality_uses
@@ -135,6 +134,16 @@ function externalPassesGates(
     return false; // quality gate
   return true;
 }
+
+/** QA MJ5/B1b: the build estimate is CLIENT input and was live-abused to
+ * book $1.15M of fake savings. Clamp every term to sane ceilings, and book
+ * ONLY hard dollars (token cost + external fees) as avoided - soft dollars
+ * (wall-clock value, failure premium) inform the GATE but never the meter. */
+const CLAMP = {
+  max_tokens: 50_000_000, // ~ a very large corpus embed
+  max_fees_usd: 5_000,
+  max_wall_clock_s: 24 * 3600,
+};
 
 export async function acquireAsset(
   ctx: TenantContext,
@@ -144,7 +153,17 @@ export async function acquireAsset(
   req: AcquireRequest,
 ): Promise<AcquireResult> {
   const pricing = deps.getPricing();
-  const build = estimateBuildCost(pricing, req.build_estimate);
+  const est = { ...req.build_estimate };
+  est.expected_input_tokens = Math.min(est.expected_input_tokens ?? 0, CLAMP.max_tokens);
+  est.expected_output_tokens = Math.min(est.expected_output_tokens ?? 0, CLAMP.max_tokens);
+  est.external_fees_usd = Math.min(est.external_fees_usd ?? 0, CLAMP.max_fees_usd);
+  est.expected_wall_clock_seconds = Math.min(
+    est.expected_wall_clock_seconds ?? 0,
+    CLAMP.max_wall_clock_s,
+  );
+  const build = estimateBuildCost(pricing, est);
+  // hard dollars only for anything BOOKED as avoided (MJ5)
+  const hardAvoided = build.parts.tokens_usd + build.parts.external_fees_usd;
   const threshold = Math.min(policy.reuse.buy_threshold, 0.7); // §6.4 hard cap
   const constraints = req.constraints ?? {};
   const pricingVersion = pricing?.pricing_version ?? "unpriced";
@@ -155,7 +174,7 @@ export async function acquireAsset(
   if (lib) {
     const reuseCost = Number(lib.row.price) * 0 + 0; // access-controlled fetch ~ free (§6.3 single-tenant)
     if (costGate(reuseCost, build.total_usd, threshold)) {
-      const avoided = build.total_usd - reuseCost;
+      const avoided = Math.max(0, hardAvoided - reuseCost); // MJ5: hard dollars only
       await ctx.db.query(
         `UPDATE assets SET quality = jsonb_set(quality, '{num_uses}', ((quality->>'num_uses')::int + 1)::text::jsonb) WHERE exact_fp = $1`,
         [lib.row.exact_fp],
@@ -173,6 +192,7 @@ export async function acquireAsset(
             currency: "USD",
             pricing_source: "meter",
             pricing_version: pricingVersion,
+            basis: "estimated", // MJ5/MJ6: derives from a clamped client estimate
           },
           asset_ref: {
             exact_fp: lib.row.exact_fp,
@@ -200,7 +220,7 @@ export async function acquireAsset(
     externalPassesGates(constraints, req.spec, { num_uses: commonsHit.quality.num_uses }) &&
     costGate(0, build.total_usd, threshold)
   ) {
-    const avoided = build.total_usd;
+    const avoided = hardAvoided; // MJ5: hard dollars only
     // cache a local copy in the org library (provenance = commons)
     const bytes = await deps.commons.fetchBytes(commonsHit.checksum);
     if (bytes && policy.reuse.capture_enabled) {
@@ -230,6 +250,7 @@ export async function acquireAsset(
           currency: "USD",
           pricing_source: "meter",
           pricing_version: pricingVersion,
+          basis: "estimated", // MJ5/MJ6
         },
         sourcing: {
           rung: 2,
@@ -288,7 +309,7 @@ export async function acquireAsset(
       });
       commonsCaptured = admitted.admitted;
     }
-    const avoided = build.total_usd; // fetch cost ~ 0; the whole build was avoided
+    const avoided = hardAvoided; // MJ5: hard dollars only; fetch cost ~ 0
     await ingestEvent(
       ctx,
       SOURCING_EVENT(seat, {
@@ -302,6 +323,7 @@ export async function acquireAsset(
           currency: "USD",
           pricing_source: "meter",
           pricing_version: pricingVersion,
+          basis: "estimated", // MJ5/MJ6
         },
         sourcing: {
           rung: 3,

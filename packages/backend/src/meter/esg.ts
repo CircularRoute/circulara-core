@@ -38,6 +38,10 @@ export interface EsgExport {
     tokens_avoided: number;
     observed_spend_usd: number;
     avoided_cost_usd: number;
+    /** QA MJ6: how certain the avoided figure is - the WORST basis among its
+     * inputs, plus the per-basis breakdown. Never overstated. */
+    avoided_cost_basis: "measured" | "estimated" | "upper_bound";
+    avoided_usd_by_basis: Record<string, number>;
     external_data_spend_usd: number; // own line, never netted (AD12)
   };
   impact: {
@@ -95,6 +99,8 @@ export function esgExport(
       ),
       observed_spend_usd: report.observed_usd,
       avoided_cost_usd: report.avoided_usd,
+      avoided_cost_basis: report.avoided_cost_basis,
+      avoided_usd_by_basis: report.avoided_usd_by_basis,
       external_data_spend_usd: report.external_spend_usd,
     },
     impact: {
@@ -140,7 +146,9 @@ export function esgExportCsv(e: EsgExport): string {
     ],
     ["tokens_observed", "", String(e.totals.tokens_observed), "", "tokens", "Measured", "meter events"],
     ["observed_spend_usd", "", String(e.totals.observed_spend_usd), "", "USD", "Measured", "meter events"],
-    ["avoided_cost_usd", "", String(e.totals.avoided_cost_usd), "", "USD", "Measured", "meter events (counterfactual accounting, AD4)"],
+    ["avoided_cost_usd", "", String(e.totals.avoided_cost_usd), "", "USD",
+      e.totals.avoided_cost_basis === "measured" ? "Measured" : e.totals.avoided_cost_basis === "estimated" ? "Estimated" : "Upper bound",
+      "meter events (counterfactual accounting, AD4); basis = worst input basis (MJ6)"],
     ["external_data_spend_usd", "", String(e.totals.external_data_spend_usd), "", "USD", "Measured", "itemized purchases (AD12, never netted)"],
   ];
   return rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n");

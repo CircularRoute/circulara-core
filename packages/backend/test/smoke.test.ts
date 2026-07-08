@@ -12,6 +12,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { ControlPlane } from "../src/db/tenancy.js";
 import { FsObjectStore, sha256hex } from "../src/storage/objectStore.js";
 import { buildApp } from "../src/api/server.js";
+import { ingestEvent } from "../src/meter/meter.js";
 import { Authenticator } from "../src/auth/auth.js";
 import {
   PricingRegistry,
@@ -80,6 +81,9 @@ before(async () => {
   app = buildApp({
     commons,
     index,
+    // benign classifier for capture paths; the absent/outage behaviors are
+    // unit-tested against runClearance directly
+    classifierFor: async () => async () => ({ risk_category: "none" as const, confidence: "high" as const }),
     control,
     objects: new FsObjectStore(join(tmp, "objects")),
     auth: new Authenticator({
@@ -264,11 +268,11 @@ test("tenant lifecycle + seat rules + event flow + isolation", async () => {
   assert.equal(badSourcing.statusCode, 422);
 
   // valid v1.1 sourcing event (rung-4 spend reported separately)
-  const sourcingOk = await app.inject({
-    method: "POST",
-    url: "/v1/events",
-    headers: { ...ADMIN, "x-tenant-id": t1.tenant_id }, // engine-class event: admin-only (QA B1)
-    payload: validEvent(seat_id, {
+  // engine-class event: in-process ingestion is the ONLY path (QA BL2)
+  const ctxT1 = await control.contextFor(t1.tenant_id);
+  const sourcingOk = {
+    statusCode: 201,
+    ...(await ingestEvent(ctxT1, validEvent(seat_id, {
       schema_version: "1.1",
       module: "reuse",
       intervention_type: "external_paid",
@@ -290,8 +294,8 @@ test("tenant lifecycle + seat rules + event flow + isolation", async () => {
         license: { redistributable: false, spdx_or_terms: "DSA", parent_fp: null },
         commons_captured: false,
       },
-    }),
-  });
+    }))),
+  };
   assert.equal(sourcingOk.statusCode, 201);
 
   // summary reflects t1 only; external spend separated from savings
@@ -361,11 +365,10 @@ test("M1 stacking rule: chained events on one call_id telescope, no double-count
   const stage1 = { counterfactual_usd: 1.0, actual_usd: 0.6 }; // compress: avoids 0.4
   const stage2 = { counterfactual_usd: 0.6, actual_usd: 0.25 }; // route: avoids 0.35
   for (const [i, stage] of [stage1, stage2].entries()) {
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/events",
-      headers: { ...ADMIN, "x-tenant-id": t.tenant_id }, // engine-class events: admin-only (QA B1)
-      payload: validEvent(seat_id, {
+    const ctxM1 = await control.contextFor(t.tenant_id);
+    const res = {
+      statusCode: 201,
+      ...(await ingestEvent(ctxM1, validEvent(seat_id, {
         call_id: callId,
         module: "reduce",
         intervention_type: i === 0 ? "compress" : "route",
@@ -376,8 +379,8 @@ test("M1 stacking rule: chained events on one call_id telescope, no double-count
           pricing_source: "provider_registry",
           pricing_version: "test-snapshot",
         },
-      }),
-    });
+      }))),
+    };
     assert.equal(res.statusCode, 201);
   }
   const sum = (
@@ -827,11 +830,9 @@ test("WS4 report: per user/team/module/month attribution + labeled impact ranges
     mk(amy, "sso|amy", "eng", "2026-07-01T10:00:00Z", "recycle", "toolcall_cache", 0.02, 0.0),
     mk(ben, "sso|ben", "sales", "2026-07-02T10:00:00Z", "reduce", "route", 0.03, 0.01),
   ];
+  const ctxRep = await control.contextFor(t.tenant_id);
   for (const ev of events) {
-    const r = await app.inject({
-      method: "POST", url: "/v1/events", headers: { ...ADMIN, ...th }, payload: ev, // QA B1
-    });
-    assert.equal(r.statusCode, 201);
+    await ingestEvent(ctxRep, ev); // engine-class: in-process only (QA BL2)
   }
 
   const report = (
@@ -1141,19 +1142,25 @@ test("wave3 Reduce passes: cap conservative rule + prompt-cache measured savings
     input: 100, output: 500, stop_reason: "end_turn",
   });
   assert.equal(notHit.length, 0);
-  // cap: hit -> avoided = (4000-1000) output tokens priced
+  // cap hit (QA MJ3): phantom output is an UPPER BOUND - tokens counted,
+  // dollars NEVER booked
   const hit = stageSavings(TEST_PRICING, [capApplied], "claude-haiku-4-5-20251001", {
     input: 100, output: 1000, stop_reason: "max_tokens",
   });
   assert.equal(hit.length, 1);
-  assert.ok(Math.abs(hit[0].avoided_usd - 3000 * 5e-6) < 1e-12);
+  assert.equal(hit[0].avoided_usd, 0);
+  assert.equal(hit[0].tokens_avoided_output, 3000);
+  assert.equal(hit[0].basis, "upper_bound");
 
-  // prompt cache: measured from provider-reported cache reads at 90% discount
+  // prompt cache: measured dollars from provider-reported cache reads at 90%
+  // discount - and ZERO avoided tokens (the compute still ran, QA BL3)
   const cache = stageSavings(TEST_PRICING, [cacheApplied], "claude-haiku-4-5-20251001", {
     input: 100, output: 10, cache_read: 10000,
   });
   assert.equal(cache.length, 1);
   assert.ok(Math.abs(cache[0].avoided_usd - 10000 * 1e-6 * 0.9) < 1e-12);
+  assert.equal(cache[0].tokens_avoided_input + cache[0].tokens_avoided_output, 0);
+  assert.equal(cache[0].basis, "measured");
 });
 
 // ---------- wave 4 (Recycle: tool-call cache + response cache) ----------
@@ -1509,12 +1516,12 @@ test("wave5 acquire rung 1: library reuse hit books avoided; gates block stale (
   assert.equal(acq.rung, 1);
   assert.equal(acq.layer, "exact");
   // 2M tokens x 1e-6 = $2 x 1.15 failure premium = $2.30 avoided
-  assert.ok(Math.abs(acq.avoided_usd - 2.3) < 1e-9);
+  assert.ok(Math.abs(acq.avoided_usd - 2.0) < 1e-9); // MJ5: hard dollars only, no soft premium
 
   const report = (
     await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
   ).json() as { avoided_usd: number; by_module: { key: string; avoided_usd: number }[] };
-  assert.ok(Math.abs(report.avoided_usd - 2.3) < 1e-9);
+  assert.ok(Math.abs(report.avoided_usd - 2.0) < 1e-9);
   assert.ok(report.by_module.find((m) => m.key === "reuse"));
 
   // GATES: a TTL-expired asset is NEVER served (freshness gate) -> falls to build
@@ -1825,6 +1832,7 @@ test("wave6 promotion gate + audit trail + FP rate (steps 5-6)", async () => {
         spec: spec2, content: "clean internal marketing corpus",
         provenance: { producer: "org", source: "internal", build_method: "parse" },
         license: { redistributable: true, spdx_or_terms: "CC-BY-4.0" },
+        license_evidence: "https://creativecommons.org/licenses/by/4.0/ (org-authored, CC-BY declared at capture)", // MJ1
       },
     })
   ).json() as { exact_fp: string; clearance: { max_tier: string } };
@@ -1902,11 +1910,8 @@ test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works
       cost: { counterfactual_usd: 0.05, actual_usd: 0.01, avoided_usd: 0.04, currency: "USD", pricing_source: "meter", pricing_version: "t" },
     },
   ]) {
-    const r = await app.inject({
-      method: "POST", url: "/v1/events", headers: { ...ADMIN, ...th }, // QA B1
-      payload: validEvent(seat_id, { ts: "2026-07-06T10:00:00Z", ...over }),
-    });
-    assert.equal(r.statusCode, 201);
+    const ctxEsg = await control.contextFor(t.tenant_id);
+    await ingestEvent(ctxEsg, validEvent(seat_id, { ts: "2026-07-06T10:00:00Z", ...over })); // QA BL2
   }
 
   const exp = (
@@ -2178,4 +2183,216 @@ test("QA policy-PATCH: sectioned updates preserve everything not mentioned", asy
   ).json() as { monthly_budget_usd: number; reuse: { capture_enabled: boolean } };
   assert.equal(pol.monthly_budget_usd, 500);
   assert.equal(pol.reuse.capture_enabled, true); // NOT silently reset (QA finding)
+});
+
+// ---------- QA v1 fix pass (BL1-BL4 + MJ5/B1b + MJ7): regression battery ----------
+
+test("QA-BL1: credentials are tenant-bound; deprovisioned agent tokens revoke (MJ8)", async () => {
+  const mk = async (name: string) =>
+    (await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name } })).json() as { tenant_id: string };
+  const tA = await mk("bl1-a");
+  const tB = await mk("bl1-b");
+  const agent = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, "x-tenant-id": tA.tenant_id },
+      payload: { identity_type: "named_agent", user_id: "sso|owner", agent_identity: "bot" },
+    })
+  ).json() as { seat_id: string };
+  const { token } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${agent.seat_id}/token`,
+      headers: { ...ADMIN, "x-tenant-id": tA.tenant_id },
+    })
+  ).json() as { token: string };
+
+  // token minted for tenant A used against tenant B -> 403 (BL1)
+  const cross = await app.inject({
+    method: "GET", url: "/v1/meter/report",
+    headers: { authorization: `Bearer ${token}`, "x-tenant-id": tB.tenant_id },
+  });
+  assert.equal(cross.statusCode, 403);
+  // ... and against its own tenant -> works
+  const own = await app.inject({
+    method: "GET", url: "/v1/meter/report",
+    headers: { authorization: `Bearer ${token}`, "x-tenant-id": tA.tenant_id },
+  });
+  assert.equal(own.statusCode, 200);
+
+  // MJ8: deprovision the seat -> the still-unexpired token is rejected
+  const ctxA = await control.contextFor(tA.tenant_id);
+  await ctxA.db.query(`UPDATE seats SET active = false WHERE seat_id = $1`, [agent.seat_id]);
+  const revoked = await app.inject({
+    method: "GET", url: "/v1/meter/report",
+    headers: { authorization: `Bearer ${token}`, "x-tenant-id": tA.tenant_id },
+  });
+  assert.equal(revoked.statusCode, 401);
+});
+
+test("QA-BL2: /v1/events is observe-only for EVERYONE (admin included)", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "bl2" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|bl2" },
+    })
+  ).json() as { seat_id: string };
+  const adminForge = await app.inject({
+    method: "POST", url: "/v1/events", headers: { ...ADMIN, ...th },
+    payload: validEvent(seat_id, {
+      module: "reduce", intervention_type: "compress",
+      cost: { counterfactual_usd: 1000, actual_usd: 0, avoided_usd: 1000, currency: "USD", pricing_source: "meter", pricing_version: "x" },
+    }),
+  });
+  assert.equal(adminForge.statusCode, 403); // no client input path to savings, full stop
+});
+
+test("QA-BL3: a multi-stage call books marginal avoided tokens, not 3x the call", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "bl3" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|bl3" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/provider-keys/anthropic",
+    headers: { ...ADMIN, ...th }, payload: { key: "sk-ant-test-real-key" },
+  });
+  const { credential } = (
+    await app.inject({
+      method: "POST", url: `/v1/seats/${seat_id}/gateway-credential`,
+      headers: { ...ADMIN, ...th },
+    })
+  ).json() as { credential: string };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reduce: { routing: { enabled: true, map: { "claude-opus-4-8": "claude-haiku-4-5-20251001" }, simple_max_chars: 2000 } } },
+  });
+  // routed call: fake forward reports 100 in / 20 out
+  const gw = await app.inject({
+    method: "POST", url: "/gateway/anthropic/v1/messages",
+    headers: { ...th, "x-api-key": credential },
+    payload: { model: "claude-opus-4-8", max_tokens: 100, messages: [{ role: "user", content: "hello" }] },
+  });
+  assert.equal(gw.statusCode, 200);
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as {
+    tokens_observed: number; avoided_usd: number;
+    avoided_impact: { co2e_g: { median: number } };
+    avoided_cost_basis: string;
+  };
+  assert.equal(report.tokens_observed, 120);
+  assert.ok(report.avoided_usd > 0); // routing dollars are real (measured)
+  // BL3: routing avoids ZERO tokens - the avoided carbon chain stays zero
+  assert.equal(report.avoided_impact.co2e_g.median, 0);
+});
+
+test("QA-BL4: derivative laundering is refused; cycles fail closed", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "bl4" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true }, clearance: { default_max_tier: "marketable", rules: [], auto_approve_org: false } },
+  });
+  // A: NOT redistributable
+  const specA = { asset_type: 2, source_checksum: "a1".repeat(32), pipeline: "md", pipeline_version: "1" };
+  const capA = (
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: {
+        spec: specA, content: "proprietary licensed dataset rows",
+        provenance: { producer: "org", source: "internal", build_method: "parse" },
+        license: { redistributable: false, spdx_or_terms: "proprietary" },
+      },
+    })
+  ).json() as { exact_fp: string };
+  // B: derivative of A, SELF-DECLARES redistributable + brings evidence
+  const specB = { asset_type: 2, source_checksum: "b2".repeat(32), pipeline: "md", pipeline_version: "1" };
+  const capB = (
+    await app.inject({
+      method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+      payload: {
+        spec: specB, content: "derived summary of the proprietary rows",
+        provenance: { producer: "org", source: "internal", build_method: "summarize" },
+        license: { redistributable: true, spdx_or_terms: "CC-BY-4.0" },
+        license_evidence: "self-declared", parent_fp: capA.exact_fp,
+      },
+    })
+  ).json() as { exact_fp: string; clearance: { max_tier: string } };
+  // the capture-time verdict already caps the derivative at org (BL4 in clearance)
+  assert.equal(capB.clearance.max_tier, "org");
+  // and the promotion gate independently walks the chain and refuses
+  const promo = await app.inject({
+    method: "POST", url: `/v1/assets/${capB.exact_fp}/promote`,
+    headers: { ...ADMIN, ...th }, payload: { to_tier: "marketable", approver: "Rashad (founder)" },
+  });
+  assert.equal(promo.statusCode, 403);
+
+  // cycle fail-closed: A <-> B loop returns NOT redistributable
+  const ctx = await control.contextFor(t.tenant_id);
+  await ctx.db.query(`UPDATE assets SET parent_fp = $1 WHERE exact_fp = $2`, [capB.exact_fp, capA.exact_fp]);
+  const { effectiveRedistributable } = await import("../src/engines/reuse/library.js");
+  assert.equal(await effectiveRedistributable(ctx, capB.exact_fp), false);
+});
+
+test("QA-B1b/MJ5: the $1.15M acquire attack is clamped and labeled estimated", async () => {
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "b1b" } })
+  ).json() as { tenant_id: string };
+  const th = { "x-tenant-id": t.tenant_id };
+  const { seat_id } = (
+    await app.inject({
+      method: "POST", url: "/v1/seats", headers: { ...ADMIN, ...th },
+      payload: { identity_type: "human", user_id: "sso|b1b" },
+    })
+  ).json() as { seat_id: string };
+  await app.inject({
+    method: "PUT", url: "/v1/policy", headers: { ...ADMIN, ...th },
+    payload: { reuse: { capture_enabled: true } },
+  });
+  const spec = { asset_type: 2, source_checksum: "c3".repeat(32), pipeline: "md", pipeline_version: "1" };
+  await app.inject({
+    method: "POST", url: "/v1/assets/capture", headers: { ...SEAT, ...th },
+    payload: { spec, content: "tiny", provenance: { producer: "org", source: "internal", build_method: "x" } },
+  });
+  // the original attack: a million dollars of claimed external fees
+  const acq = (
+    await app.inject({
+      method: "POST", url: "/v1/acquire", headers: { ...SEAT, ...th },
+      payload: { seat_id, spec, build_estimate: { external_fees_usd: 1_000_000 } },
+    })
+  ).json() as { verdict: string; avoided_usd: number };
+  assert.equal(acq.verdict, "reuse");
+  assert.ok(acq.avoided_usd <= 5_000); // clamped to the fee ceiling
+  const report = (
+    await app.inject({ method: "GET", url: "/v1/meter/report", headers: { ...SEAT, ...th } })
+  ).json() as { avoided_usd: number; avoided_cost_basis: string };
+  assert.ok(report.avoided_usd <= 5_000);
+  assert.equal(report.avoided_cost_basis, "estimated"); // MJ6: never claimed as measured
+});
+
+test("QA-MJ7: coupon covers exactly 12 billing periods; 10th slot is the last", async () => {
+  const { computeInvoice, setBilling } = await import("../src/billing/billing.js");
+  const t = (
+    await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "mj7" } })
+  ).json() as { tenant_id: string };
+  const ctx = await control.contextFor(t.tenant_id);
+  await setBilling(ctx, {
+    plan: "team", cycle: "annual",
+    coupon: { code: "EARLY10", redeemed_at: "2025-07-15T12:00:00Z" },
+  });
+  // months 0..11 discounted; month 12 (2026-07) is NOT (the old bug's 13th month)
+  const m11 = await computeInvoice(ctx, "2026-06");
+  assert.ok(m11.coupon); // 12th period, still discounted
+  const m12 = await computeInvoice(ctx, "2026-07");
+  assert.equal(m12.coupon, null); // 13th period: expired (MJ7)
 });

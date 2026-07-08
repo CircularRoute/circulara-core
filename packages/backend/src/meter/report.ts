@@ -34,6 +34,10 @@ export interface MeterReport {
   by_module: Slice[];
   by_month: Slice[];
   over_seat_cap: boolean; // QA m4: WS5 renders banner + report watermark
+  /** QA MJ6: the WORST basis among avoided-cost events - the export must never
+   * label a figure more certain than its weakest input. */
+  avoided_cost_basis: "measured" | "estimated" | "upper_bound";
+  avoided_usd_by_basis: Record<string, number>;
   methodology_note: string;
 }
 
@@ -104,6 +108,19 @@ export async function meterReport(
   const tokensObserved = Number(t.tokens);
   const tokensAvoided = Math.max(0, Number(t.avoided_tokens));
 
+  // QA MJ6: aggregate avoided dollars by declared basis (absent = measured)
+  const basisRows = await ctx.db.query<{ basis: string | null; s: string }>(
+    `SELECT payload->'cost'->>'basis' AS basis, coalesce(sum(avoided_usd),0)::text AS s
+       FROM meter_events ${where} ${month ? "AND" : "WHERE"} avoided_usd > 0
+      GROUP BY 1`,
+    params,
+  );
+  const byBasis: Record<string, number> = {};
+  for (const r of basisRows.rows) byBasis[r.basis ?? "measured"] = Number(r.s);
+  const ORDER = ["measured", "estimated", "upper_bound"] as const;
+  const worst =
+    ORDER.filter((b) => (byBasis[b] ?? 0) > 0).pop() ?? "measured";
+
   return {
     month: month ?? null,
     events: t.events,
@@ -118,6 +135,8 @@ export async function meterReport(
     by_module: await slice(SLICE_SQL.by_module),
     by_month: await slice(SLICE_SQL.by_month),
     over_seat_cap: await isOverSeatCap(ctx),
+    avoided_cost_basis: worst,
+    avoided_usd_by_basis: byBasis,
     methodology_note:
       "Energy and CO2e are estimated ranges (low/median/high) from EcoLogits-class " +
       "coefficients with per-figure confidence labels; assumptions disclosed on the " +
