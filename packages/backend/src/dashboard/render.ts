@@ -85,7 +85,8 @@ nav.tabs a.active{background:var(--blue);color:#fff}
 .tip::after{content:"";position:absolute;top:-6px;right:16px;width:12px;height:12px;background:var(--band);transform:rotate(45deg)}
 .info:hover + .tip,.info:focus + .tip,.tip:hover{opacity:1;visibility:visible;transform:translateY(0)}
 .estpill{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:600;background:var(--blue-wash);color:var(--blue-deep)}
-.label{font-size:12.5px;letter-spacing:.12em;font-weight:600;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
+.label{font-size:12.5px;letter-spacing:.12em;font-weight:700;text-transform:uppercase;color:var(--ink);margin-bottom:10px}
+.subtext{display:inline-block;margin:0 0 14px;padding:4px 12px;border-radius:999px;font-size:12.5px;font-weight:500;background:var(--surface-2);color:var(--ink-2);line-height:1.45}
 .fig{font-family:var(--font-fig);font-weight:600;font-variant-numeric:tabular-nums;font-size:30px;line-height:1.1}
 .fig.green{color:var(--green-deep)}
 .fig small{font-size:14px;color:var(--ink-2);font-weight:400}
@@ -163,18 +164,18 @@ ${rows
 ${capBanner(r)}
 <div class="grid">
   <div class="card"><div class="label">Observed spend${r.month ? ` (${esc(r.month)})` : ""}</div>
-    <div class="fig">${usd(r.observed_usd)}</div>
-    <div class="conf blue">What your AI calls cost, at standard provider rates</div></div>
+    <div class="subtext">What your AI calls cost, at standard provider rates</div>
+    <div class="fig">${usd(r.observed_usd)}</div></div>
   <div class="card"><div class="label">Tokens observed</div>
-    <div class="fig">${num(r.tokens_observed)}</div>
-    <div class="conf blue">Total usage behind that spend</div></div>
+    <div class="subtext">Total usage behind that spend</div>
+    <div class="fig">${num(r.tokens_observed)}</div></div>
   <div class="card tipcard"><div class="label">Avoidable cost</div>
+    <div class="subtext">Estimated - unlock on a paid tier</div>
     <div class="fig green"><span class="range">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</span></div>
-    <div class="estpill">Estimated - unlock on a paid tier</div>
     ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on - routing, caching, compression, and the reuse library. Observe measures this for free so you can see the number before paying; a paid tier actually captures it. A published-benchmark range, not a guarantee.")}</div>
   <div class="card tipcard"><div class="label">Your savings</div>
+    <div class="subtext">Actual savings, once the engines run</div>
     <div class="fig green">${usd(r.avoided_usd)}</div>
-    <div class="conf">Actual savings, once the engines run</div>
     ${infoTip("The real dollars Circulara has saved by intervening on your calls. It stays $0 on the free Observe tier - Observe only measures, it never changes a call - and starts counting once you upgrade to a paid tier and the engines are enabled.")}</div>
 </div>
 <div class="grid">
