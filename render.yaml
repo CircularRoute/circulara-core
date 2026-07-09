@@ -8,7 +8,7 @@
 databases:
   - name: circulara-observe-db
     databaseName: circulara
-    plan: starter          # Render Postgres; pgvector supported natively
+    plan: basic-256mb      # Render Postgres; pgvector supported natively
     postgresMajorVersion: "16"
 
 services:
@@ -32,7 +32,7 @@ services:
         value: consumer            # free Observe: email magic-link + Google sign-in
                                    # (enterprise SSO/oidc is reserved for paid)
       - key: CIRCULARA_APP_BASE_URL
-        value: https://circulara-observe-backend.onrender.com  # UPDATE to the final
+        value: https://plugin.circulara.ai
                                    # public URL before publish (OAuth callback + magic links)
       - key: CIRCULARA_LIVE_CATALOGS
         value: "true"              # live free catalogs (HF/CKAN/RODA)
