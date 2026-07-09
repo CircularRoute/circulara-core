@@ -82,10 +82,10 @@ nav.tabs .tab-locked:hover::after,nav.tabs .tab-locked:focus::after{opacity:1;vi
 .btn.ghost{background:var(--surface);color:var(--blue-deep);border-color:var(--line-strong)}
 .btn.ghost:hover{border-color:var(--blue)}
 .backlink{display:inline-block;margin-bottom:16px;color:var(--blue-deep);font-size:14px;font-weight:600;text-decoration:none}
-.upsell{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;background:linear-gradient(135deg,var(--band),#0b3157);color:#fff;border-radius:var(--r-lg);padding:22px 26px;margin:8px 0 28px}
+.upsell{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;background:linear-gradient(135deg,var(--green-deep),#15A85C);color:#fff;border-radius:var(--r-lg);padding:22px 26px;margin:8px 0 28px}
 .upsell-text{font-size:17px;font-weight:700;letter-spacing:-.01em}
-.upsell .btn.primary{background:var(--green);color:#fff}
-.upsell .btn.primary:hover{background:var(--green-deep)}
+.upsell .btn.primary{background:#fff;color:var(--green-deep)}
+.upsell .btn.primary:hover{background:#EAF6EF}
 .modal-ov{position:fixed;inset:0;background:rgba(10,37,64,.55);display:flex;align-items:center;justify-content:center;padding:24px;z-index:100}
 .modal-ov[hidden]{display:none}
 .modal{background:var(--surface);border-radius:var(--r-lg);box-shadow:0 24px 64px -20px rgba(10,37,64,.5);padding:32px;max-width:440px;width:100%;position:relative}
