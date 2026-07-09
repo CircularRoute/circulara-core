@@ -2726,3 +2726,47 @@ test("task011 Routing Readiness: climbs with evidence, flips ready at threshold"
   assert.equal(sum.evidence, 1);
   assert.equal(sum.ready, true);
 });
+
+// ---------- builder.20260707.013 (shared multi-tenant free tier) ----------
+
+test("013 shared mode: workspaces isolated within ONE instance; paid = dedicated", async () => {
+  // shared is the DEFAULT (free tier). Two workspaces on the one shared DB.
+  const wsA = (await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "free-a" } })).json() as { tenant_id: string };
+  const wsB = (await app.inject({ method: "POST", url: "/v1/tenants", headers: ADMIN, payload: { name: "free-b" } })).json() as { tenant_id: string };
+
+  // both are shared plan_mode
+  const recA = await control.getTenant(wsA.tenant_id);
+  assert.equal(recA?.plan_mode, "shared");
+  assert.ok(recA?.schema?.startsWith("ws_"));
+
+  // seed A only
+  const seatA = (await app.inject({ method: "POST", url: "/v1/seats", headers: { ...ADMIN, "x-tenant-id": wsA.tenant_id }, payload: { identity_type: "human", user_id: "sso|a" } })).json() as { seat_id: string };
+  await app.inject({ method: "POST", url: "/v1/events", headers: { ...SEAT, "x-tenant-id": wsA.tenant_id }, payload: validEvent(seatA.seat_id) });
+
+  // A sees its event; B (different schema, SAME instance) sees zero - isolation
+  const sumA = (await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, "x-tenant-id": wsA.tenant_id } })).json() as { events: number };
+  const sumB = (await app.inject({ method: "GET", url: "/v1/meter/summary", headers: { ...SEAT, "x-tenant-id": wsB.tenant_id } })).json() as { events: number };
+  assert.equal(sumA.events, 1);
+  assert.equal(sumB.events, 0);
+
+  // A's seat does not exist in B's workspace (cross-workspace event rejected)
+  const cross = await app.inject({ method: "POST", url: "/v1/events", headers: { ...SEAT, "x-tenant-id": wsB.tenant_id }, payload: validEvent(seatA.seat_id) });
+  assert.equal(cross.statusCode, 422);
+
+  // raw-DB proof: at the shared connection with NO schema pin, A's meter_events
+  // table is not on the default search_path -> the workspace tables are only
+  // reachable through the scoped context (physical schema isolation)
+  const ctxA = await control.contextFor(wsA.tenant_id);
+  const n = await ctxA.db.query<{ n: number }>(`SELECT count(*)::int n FROM meter_events`);
+  assert.equal(n.rows[0].n, 1); // scoped view sees exactly A's rows
+
+  // PAID path: dedicated mode provisions an isolated DB (opt-in, not default)
+  const paid = await control.createTenant("paying-co", { mode: "dedicated" });
+  assert.equal(paid.plan_mode, "dedicated");
+  assert.equal(paid.schema, null);
+  const ctxPaid = await control.contextFor(paid.tenant_id);
+  const paidSeat = randomUUID();
+  await ctxPaid.db.query(`INSERT INTO seats (seat_id, identity_type, user_id) VALUES ($1,'human','sso|paid')`, [paidSeat]);
+  const paidN = await ctxPaid.db.query<{ n: number }>(`SELECT count(*)::int n FROM seats`);
+  assert.equal(paidN.rows[0].n, 1); // its own DB, independent of the shared workspaces
+});

@@ -182,4 +182,13 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 `,
   },
+  {
+    // go-live model: free = shared (schema-per-workspace), paid = dedicated DB.
+    version: 2,
+    sql: `
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan_mode text NOT NULL DEFAULT 'shared'
+  CHECK (plan_mode IN ('shared','dedicated'));
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS schema text;  -- shared: workspace schema; dedicated: null
+`,
+  },
 ];

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "test": "tsx --test test/*.test.ts",
-    "registry": "tsx src/registry/cli.ts"
+    "registry": "tsx src/registry/cli.ts",
+    "start": "tsx src/main.ts"
   },
   "dependencies": {
     "@circulara/schema": "*",
@@ -13,6 +14,10 @@
     "@electric-sql/pglite-pgvector": "^0.0.5",
     "fastify": "^5.0.0",
     "jose": "^6.0.0",
+    "pg": "^8.13.0",
     "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0"
   }
 }

@@ -1,0 +1,43 @@
+# Render Blueprint - Circulara shared Observe backend (go-live).
+# Matches CTO deploy-prep (cto_golive_deploy_prep_20260707.md) + the go-live
+# model (decisions.md 2026-07-07): ONE shared backend + ONE Postgres/pgvector,
+# free = shared workspaces (schema-per-workspace), paid = dedicated later.
+# Provisioning is founder-approved (~$15-30/mo); the actual deploy is a founder
+# "flip public" go. Secrets are set in the Render dashboard (sync:false), never
+# committed. pgvector is enabled by the first migration (CREATE EXTENSION).
+databases:
+  - name: circulara-observe-db
+    databaseName: circulara
+    plan: starter          # Render Postgres; pgvector supported natively
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: circulara-observe-backend
+    runtime: node
+    plan: starter
+    rootDir: packages/backend
+    buildCommand: npm install
+    startCommand: npm run start   # B6: tsx src/main.ts
+    healthCheckPath: /healthz
+    autoDeploy: false             # deploy on explicit founder go, not on push
+    envVars:
+      - key: NODE_ENV
+        value: production          # B3: binds 0.0.0.0:$PORT
+      - key: DATABASE_URL
+        fromDatabase:
+          name: circulara-observe-db
+          property: connectionString
+      - key: CIRCULARA_AUTH_MODE
+        value: oidc                # dashboard session auth before public URL
+      - key: CIRCULARA_LIVE_CATALOGS
+        value: "true"              # live free catalogs (HF/CKAN/RODA)
+      # --- secrets: set in the Render dashboard, sync:false (never in repo) ---
+      - key: CIRCULARA_MASTER_KEY          # 32-byte hex KEK (envelope encryption)
+        sync: false
+      - key: CIRCULARA_AGENT_TOKEN_SECRET  # HS256 secret for agent-seat tokens
+        sync: false
+      - key: CIRCULARA_OIDC_ISSUER         # from the chosen IdP
+        sync: false
+      - key: CIRCULARA_OIDC_AUDIENCE
+        sync: false

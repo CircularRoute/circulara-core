@@ -40,7 +40,8 @@ const registry = new PricingRegistry(
   process.env.CIRCULARA_REGISTRY_DIR ?? "./registry-data",
 );
 
-const control = new ControlPlane(cfg.dataDir);
+// B2: on Render, DATABASE_URL -> one shared Postgres; else embedded PGlite.
+const control = new ControlPlane(cfg.dataDir, false, process.env.DATABASE_URL);
 await control.init();
 // wave 5: shared Commons (multi-tenant by design, license-gated; D14/AD8) +
 // federated index over the launch catalogs (demand-pulled fixtures in dev)
@@ -78,7 +79,10 @@ const app = buildApp({
     return key ? makeAnthropicClassifier(key) : null;
   },
 });
-await app.listen({ port: cfg.port, host: "127.0.0.1" });
+// B3: Render routes to 0.0.0.0:$PORT; bind 0.0.0.0 in production, localhost in dev.
+const isProd = process.env.NODE_ENV === "production" || !!process.env.DATABASE_URL;
+const host = process.env.CIRCULARA_HOST ?? (isProd ? "0.0.0.0" : "127.0.0.1");
+await app.listen({ port: cfg.port, host });
 console.log(
-  `circulara-core listening on 127.0.0.1:${cfg.port} (auth mode: ${authMode})`,
+  `circulara-core listening on ${host}:${cfg.port} (auth ${authMode}, ${process.env.DATABASE_URL ? "shared Postgres" : "PGlite"})`,
 );
