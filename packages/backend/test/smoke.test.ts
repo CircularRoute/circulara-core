@@ -932,8 +932,8 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const html = dash.body;
   assert.ok(html.includes("Observed spend"));
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
-  // dashboard first row: Avoidable cost (potential) + Your savings (actual) cards
-  assert.ok(html.includes("Avoidable cost") && html.includes("Your savings"));
+  // dashboard first row: Potential Savings + Actual Savings cards
+  assert.ok(html.includes("Potential Savings") && html.includes("Actual Savings"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
@@ -1956,7 +1956,7 @@ test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works
   });
   assert.equal(st.statusCode, 200);
   assert.ok(st.body.includes("Circulara saved you"));
-  assert.ok(st.body.includes("fee:"));
+  assert.ok(st.body.includes("Fee this month")); // $0 Observe fee (footer band)
   assert.ok(st.body.includes("By user") && st.body.includes("By team") && st.body.includes("By module"));
   // builder.20260708.001: statement ESG links now point at the browser-authed
   // dashboard download routes (cookie/token), not the header-only /v1 API route.

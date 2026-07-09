@@ -29,19 +29,14 @@ const pct = (f: number) => `${Math.round(f * 100)}%`;
 const infoTip = (text: string) =>
   `<span class="info" tabindex="0" role="button" aria-label="More information">i</span><div class="tip">${esc(text)}</div>`;
 
-function co2Range(r: { low: number; median: number; high: number }): string {
-  const g = (x: number) =>
-    x >= 1_000_000
-      ? `${(x / 1_000_000).toFixed(1)} t`
-      : x >= 1000
-        ? `${(x / 1000).toFixed(1)} kg`
-        : `${x.toFixed(1)} g`;
-  return `${g(r.low)} - ${g(r.high)} CO2e`;
-}
-function kwhRange(r: { low: number; high: number }): string {
-  const f = (x: number) => (x >= 1 ? x.toFixed(1) : x.toFixed(3));
-  return `${f(r.low)} - ${f(r.high)} kWh`;
-}
+/** Single-value formatters (median), for the "show one number, not a range" views. */
+const kwhOne = (x: number): string => `${x >= 1 ? x.toFixed(1) : x.toFixed(3)} kWh`;
+const co2One = (x: number): string =>
+  x >= 1_000_000
+    ? `${(x / 1_000_000).toFixed(1)} t CO2e`
+    : x >= 1000
+      ? `${(x / 1000).toFixed(1)} kg CO2e`
+      : `${x.toFixed(1)} g CO2e`;
 
 /** Ledger Light tokens, unified with the circulara.ai marketing site design
  * system (same Inter + IBM Plex Mono, same palette). Self-hosted fonts served
@@ -85,10 +80,18 @@ nav.tabs a.active{background:var(--blue);color:#fff}
 .tip::after{content:"";position:absolute;top:-6px;right:16px;width:12px;height:12px;background:var(--band);transform:rotate(45deg)}
 .info:hover + .tip,.info:focus + .tip,.tip:hover{opacity:1;visibility:visible;transform:translateY(0)}
 .estpill{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:600;background:var(--blue-wash);color:var(--blue-deep)}
-.label{font-size:12.5px;letter-spacing:.12em;font-weight:700;text-transform:uppercase;color:var(--ink);margin-bottom:10px}
-.subtext{display:block;margin:0 0 14px;font-size:13.5px;font-weight:400;color:var(--ink-2);line-height:1.45;max-width:280px}
+.label{font-size:12.5px;letter-spacing:.12em;font-weight:700;text-transform:uppercase;color:var(--ink);margin-bottom:8px}
+.label.navy{color:var(--navy)}
+.label.grn{color:var(--green-deep)}
+.subtext{display:block;margin:0 0 12px;font-size:12px;font-weight:400;color:var(--ink-3);line-height:1.45;max-width:280px}
 .fig{font-family:var(--font-fig);font-weight:600;font-variant-numeric:tabular-nums;font-size:30px;line-height:1.1}
 .fig.green{color:var(--green-deep)}
+.fig.navy{color:var(--navy)}
+.savedrow{display:flex;flex-wrap:wrap;gap:16px 40px;align-items:flex-end}
+.savedstat .fig{font-size:34px}
+.savedstat .subtext{margin:4px 0 0;color:var(--ink-3);text-transform:none;letter-spacing:0}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:4px}
+.tablewrap table{margin-bottom:0}
 .fig small{font-size:14px;color:var(--ink-2);font-weight:400}
 .conf{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:600;background:rgba(22,179,100,.10);color:var(--green-deep)}
 .conf.blue{background:var(--blue-wash);color:var(--blue-deep)}
@@ -104,7 +107,7 @@ tr:last-child td{border-bottom:none}
 .range{font-family:var(--font-fig);font-variant-numeric:tabular-nums}
 footer.band{background:var(--band);color:#fff;border-radius:var(--r-lg);padding:24px;margin-top:48px;font-size:14px}
 footer.band .fig{color:#fff}
-@media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.card{padding:16px}th,td{padding:8px 10px}}
+@media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.savedstat .fig{font-size:26px}.card{padding:16px}th,td{padding:8px 10px}.brand img.logo{height:26px}nav.tabs{gap:6px}nav.tabs a{padding:7px 12px;font-size:13px}}
 `;
 
 function page(title: string, tenantQ: string, active: string, body: string, account = ""): string {
@@ -151,42 +154,41 @@ export function renderDashboard(
 ): string {
   const sliceTable = (title: string, rows: MeterReport["by_user"]) => `
 <h2 class="section">${title}</h2>
-<table><thead><tr><th>Key</th><th class="n">Events</th><th class="n">Tokens</th><th class="n">Observed spend</th><th class="n">Avoided</th></tr></thead><tbody>
+<div class="tablewrap"><table><thead><tr><th>Key</th><th class="n">Events</th><th class="n">Tokens</th><th class="n">Observed spend</th><th class="n">Avoided</th></tr></thead><tbody>
 ${rows
   .map(
     (s) =>
       `<tr><td>${esc(s.key)}</td><td class="n">${num(s.events)}</td><td class="n">${num(s.tokens)}</td><td class="n">${usd(s.observed_usd)}</td><td class="n" style="color:var(--green-deep)">${usd(s.avoided_usd)}</td></tr>`,
   )
   .join("")}
-</tbody></table>`;
+</tbody></table></div>`;
 
   const body = `
 ${capBanner(r)}
 <div class="grid">
-  <div class="card"><div class="label">Observed spend${r.month ? ` (${esc(r.month)})` : ""}</div>
-    <div class="subtext">What your AI calls cost, at standard provider rates</div>
-    <div class="fig">${usd(r.observed_usd)}</div></div>
-  <div class="card"><div class="label">Tokens observed</div>
-    <div class="subtext">Total usage behind that spend</div>
-    <div class="fig">${num(r.tokens_observed)}</div></div>
-  <div class="card tipcard"><div class="label">Avoidable cost</div>
-    <div class="subtext">Estimated - unlock on a paid tier</div>
+  <div class="card"><div class="label navy">Tokens</div>
+    <div class="subtext">Total token usage observed</div>
+    <div class="fig navy">${num(r.tokens_observed)}</div></div>
+  <div class="card"><div class="label navy">Spend</div>
+    <div class="subtext">Total cost of AI calls, at provider rates</div>
+    <div class="fig navy">${usd(r.observed_usd)}</div></div>
+  <div class="card tipcard"><div class="label grn">Potential Savings</div>
+    <div class="subtext">What you could save with Circulara's paid tier</div>
     <div class="fig green">${usd((p.potential_low_usd + p.potential_high_usd) / 2)}</div>
-    ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on - routing, caching, compression, and the reuse library. A midpoint estimate from published benchmarks (roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + "); Observe measures it for free, a paid tier captures it. An estimate, not a guarantee.")}</div>
-  <div class="card tipcard"><div class="label">Your savings</div>
-    <div class="subtext">Actual savings, once the engines run</div>
+    ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on. A midpoint estimate from published benchmarks (roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + "); Observe measures it for free, a paid tier captures it. An estimate, not a guarantee.")}</div>
+  <div class="card tipcard"><div class="label grn">Actual Savings</div>
+    <div class="subtext">Actual savings, after you switch to paid</div>
     <div class="fig green">${usd(r.avoided_usd)}</div>
     ${infoTip("The real dollars Circulara has saved by intervening on your calls. It stays $0 on the free Observe tier - Observe only measures, it never changes a call - and starts counting once you upgrade to a paid tier and the engines are enabled.")}</div>
 </div>
 <div class="grid">
-  <div class="card"><div class="label">Baseline energy (estimated range)</div>
-    <div class="fig"><span class="range">${kwhRange(r.observed_impact.energy_kwh)}</span></div>
-    <div class="conf">${esc(r.observed_impact.energy_kwh.confidence)}</div></div>
-  <div class="card"><div class="label">Baseline carbon (estimated range)</div>
-    <div class="fig"><span class="range">${co2Range(r.observed_impact.co2e_g)}</span></div>
-    <div class="conf">${esc(r.observed_impact.co2e_g.confidence)}</div></div>
+  <div class="card"><div class="label grn">Energy Savings</div>
+    <div class="fig green">${kwhOne(r.avoided_impact.energy_kwh.median)}</div>
+    <div class="conf">${esc(r.avoided_impact.energy_kwh.confidence)}</div></div>
+  <div class="card"><div class="label grn">Carbon Savings</div>
+    <div class="fig green">${co2One(r.avoided_impact.co2e_g.median)}</div>
+    <div class="conf">${esc(r.avoided_impact.co2e_g.confidence)}</div></div>
 </div>
-<p class="note">${esc(r.methodology_note)}</p>
 ${sliceTable("By user", r.by_user)}
 ${sliceTable("By team", r.by_team)}
 ${sliceTable("By module", r.by_module)}
@@ -205,22 +207,11 @@ export function renderPotential(
 ${capBanner(r)}
 ${capWatermark(r)}
 <div class="card" style="margin-bottom:24px">
-  <div class="label">Savings potential on your observed baseline of ${usd(p.observed_usd)}</div>
-  <div class="fig green"><span class="range">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</span>
-  <small>(${pct(p.combined_low_pct)} - ${pct(p.combined_high_pct)})</small></div>
-  <div class="conf">${esc(p.confidence)} - published-benchmark ranges, not a guarantee</div>
+  <div class="label grn">Savings potential on your observed baseline of ${usd(p.observed_usd)}</div>
+  <div class="fig green">${usd((p.potential_low_usd + p.potential_high_usd) / 2)} <small>(${pct((p.combined_low_pct + p.combined_high_pct) / 2)})</small></div>
+  <div class="conf">${esc(p.confidence)} - an estimate, not a guarantee</div>
 </div>
-<h2 class="section">By technique</h2>
-<table><thead><tr><th>Technique</th><th class="n">Potential range</th><th>Assumption</th></tr></thead><tbody>
-${p.techniques
-  .map(
-    (t) =>
-      `<tr><td>${esc(t.label)}</td><td class="n" style="color:var(--green-deep)">${usd(t.potential_low_usd)} - ${usd(t.potential_high_usd)}</td><td style="color:var(--ink-2)">${esc(t.assumption)}</td></tr>`,
-  )
-  .join("")}
-</tbody></table>
 <p class="note">${esc(p.typical_note)}</p>
-${p.methodology_note ? `<p class="note">${esc(p.methodology_note)}</p>` : ""}
 `;
   return page("Savings potential", tenantQ, "potential", body, account);
 }
@@ -235,31 +226,35 @@ export function renderStatement(
 ): string {
   const breakdown = (title: string, rows: MeterReport["by_user"]) => `
 <h2 class="section">${title}</h2>
-<table><thead><tr><th>Key</th><th class="n">Tokens</th><th class="n">Observed</th><th class="n">Avoided</th></tr></thead><tbody>
+<div class="tablewrap"><table><thead><tr><th>Key</th><th class="n">Tokens</th><th class="n">Observed</th><th class="n">Avoided</th></tr></thead><tbody>
 ${rows
   .map(
     (s) =>
       `<tr><td>${esc(s.key)}</td><td class="n">${num(s.tokens)}</td><td class="n">${usd(s.observed_usd)}</td><td class="n" style="color:var(--green-deep)">${usd(s.avoided_usd)}</td></tr>`,
   )
   .join("")}
-</tbody></table>`;
+</tbody></table></div>`;
   const body = `
 ${capBanner(r)}
 ${capWatermark(r)}
 <div class="card" style="margin-bottom:24px">
-  <div class="label">The bottom line - ${esc(month)}</div>
-  <div class="fig">Circulara saved you <span class="fig green">${usd(r.avoided_usd)}</span> / ${num(Math.round(r.tokens_observed))} tokens observed / <span class="range">${co2Range(r.avoided_impact.co2e_g)}</span> avoided (${esc(r.avoided_impact.co2e_g.confidence)}) - fee: <span class="fig" style="font-size:22px">${usd(feeUsd)}</span></div>
+  <div class="label grn">Circulara saved you${month ? ` - ${esc(month)}` : ""}</div>
+  <div class="savedrow">
+    <div class="savedstat"><div class="fig green">${usd(r.avoided_usd)}</div><div class="subtext">saved</div></div>
+    <div class="savedstat"><div class="fig navy">${num(Math.round(r.tokens_observed))}</div><div class="subtext">tokens observed</div></div>
+    <div class="savedstat"><div class="fig green">${co2One(r.avoided_impact.co2e_g.median)}</div><div class="subtext">CO2e avoided</div></div>
+  </div>
 </div>
 <h2 class="section">Statement - ${esc(month)}</h2>
-<table><tbody>
+<div class="tablewrap"><table><tbody>
 <tr><td>Observed provider spend</td><td class="n">${usd(r.observed_usd)}</td></tr>
 <tr><td>Tokens observed</td><td class="n">${num(r.tokens_observed)}</td></tr>
 <tr><td>Cost avoided by Circulara</td><td class="n" style="color:var(--green-deep)">${usd(r.avoided_usd)}</td></tr>
-<tr><td>Baseline energy (range)</td><td class="n range">${kwhRange(r.observed_impact.energy_kwh)}</td></tr>
-<tr><td>Baseline carbon (range, ${esc(r.observed_impact.co2e_g.confidence)})</td><td class="n range">${co2Range(r.observed_impact.co2e_g)}</td></tr>
+<tr><td>Baseline energy</td><td class="n">${kwhOne(r.observed_impact.energy_kwh.median)}</td></tr>
+<tr><td>Baseline carbon (${esc(r.observed_impact.co2e_g.confidence)})</td><td class="n">${co2One(r.observed_impact.co2e_g.median)}</td></tr>
 <tr><td>External data purchases (reported separately)</td><td class="n">${usd(r.external_spend_usd)}</td></tr>
-<tr><td>Estimated savings potential (range)</td><td class="n range" style="color:var(--green-deep)">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</td></tr>
-</tbody></table>
+<tr><td>Estimated savings potential</td><td class="n" style="color:var(--green-deep)">${usd((p.potential_low_usd + p.potential_high_usd) / 2)}</td></tr>
+</tbody></table></div>
 ${breakdown("By user", r.by_user)}
 ${breakdown("By team", r.by_team)}
 ${breakdown("By module", r.by_module)}
@@ -280,8 +275,6 @@ export function renderObserverMeter(
   tenantQ: string,
   account = "",
 ): string {
-  const kwh = (r: { low: number; high: number }) =>
-    `${(r.low).toFixed(r.low < 1 ? 3 : 1)} - ${(r.high).toFixed(r.high < 1 ? 3 : 1)} kWh`;
   const threeCol = (label: string, a: string, p: string, s: string) => `
     <tr><td>${esc(label)}</td><td class="n">${a}</td><td class="n">${p}</td><td class="n" style="color:var(--green-deep)">${s}</td></tr>`;
   const readyRows = readiness
@@ -295,24 +288,22 @@ export function renderObserverMeter(
     .join("");
   const body = `
 <div class="card tipcard" style="margin-bottom:24px">
-  <div class="label">Detected savings (${m.events} calls observed)${m.from ? ` since ${esc(m.from)}` : ""}</div>
+  <div class="label grn">Detected savings (${m.events} calls observed)${m.from ? ` since ${esc(m.from)}` : ""}</div>
   <div class="fig green">${usd(m.savings.usd)}</div>
-  <div class="fig" style="font-size:16px;color:var(--ink-2)">${num(Math.round(m.savings.tokens))} tokens &middot; <span class="range">${kwh(m.savings.kwh)}</span> &middot; <span class="range">${co2Range(m.savings.co2e)}</span></div>
-  <div class="conf blue">the four figures come from the same avoided work; carbon ${esc(m.carbon_confidence)}</div>
-  ${infoTip("This is not your total savings - only what Observe can prove from your traffic alone: routing simple calls to a cheaper model and detectable duplicate calls. Compression, response and tool-call caching, and the reuse library add more once enabled. See the Savings potential tab for the full estimated range.")}
+  <div class="fig" style="font-size:16px;color:var(--ink-2)">${num(Math.round(m.savings.tokens))} tokens &middot; ${kwhOne(m.savings.kwh.median)} &middot; ${co2One(m.savings.co2e.median)}</div>
+  ${infoTip("This is not your total savings - only what Observe can prove from your traffic alone: routing simple calls to a cheaper model and detectable duplicate calls. Compression, response and tool-call caching, and the reuse library add more once enabled. See the Savings potential tab for the full estimate.")}
 </div>
 <h2 class="section">Actual vs potential (with Circulara)</h2>
-<table><thead><tr><th></th><th class="n">Actual (as run)</th><th class="n">Potential (optimized)</th><th class="n">Savings</th></tr></thead><tbody>
+<div class="tablewrap"><table><thead><tr><th></th><th class="n">Actual (as run)</th><th class="n">Potential (optimized)</th><th class="n">Savings</th></tr></thead><tbody>
 ${threeCol("Spend", usd(m.actual.usd), usd(m.potential.usd), usd(m.savings.usd))}
 ${threeCol("Tokens", num(Math.round(m.actual.tokens)), num(Math.round(m.potential.tokens)), num(Math.round(m.savings.tokens)))}
-${threeCol("Energy", kwh(m.actual.kwh), kwh(m.potential.kwh), kwh(m.savings.kwh))}
-${threeCol("Carbon", co2Range(m.actual.co2e), co2Range(m.potential.co2e), co2Range(m.savings.co2e))}
-</tbody></table>
-<p class="note">Savings from routing simple tasks to a cheaper model: ${usd(m.savings_source.routing_usd)} &middot; from detectable duplicate/cacheable calls: ${usd(m.savings_source.dedupe_usd)}. Actual - potential = savings, exactly, on every line.</p>
+${threeCol("Energy", kwhOne(m.actual.kwh.median), kwhOne(m.potential.kwh.median), kwhOne(m.savings.kwh.median))}
+${threeCol("Carbon", co2One(m.actual.co2e.median), co2One(m.potential.co2e.median), co2One(m.savings.co2e.median))}
+</tbody></table></div>
 <h2 class="section">Routing readiness (learned from your traffic)</h2>
-<table><thead><tr><th>Task type</th><th class="n">Observed</th><th class="n">Routable</th><th class="n">Projected saving</th><th class="n">Evidence</th><th>Status</th></tr></thead><tbody>
+<div class="tablewrap"><table><thead><tr><th>Task type</th><th class="n">Observed</th><th class="n">Routable</th><th class="n">Projected saving</th><th class="n">Evidence</th><th>Status</th></tr></thead><tbody>
 ${readyRows || '<tr><td colspan="6" style="color:var(--ink-3)">no task types observed yet</td></tr>'}
-</tbody></table>
+</tbody></table></div>
 <p class="note">${esc(m.cost_method)}</p>
 <div class="banner" style="margin-top:24px">Counts, not content - Observer meters your AI spend without reading your prompts, outputs, or code.</div>
 `;
