@@ -32,6 +32,8 @@ export interface MeterReport {
   by_user: Slice[];
   by_team: Slice[];
   by_module: Slice[];
+  by_model: Slice[];
+  by_provider: Slice[];
   by_month: Slice[];
   over_seat_cap: boolean; // QA m4: WS5 renders banner + report watermark
   /** QA MJ6: the WORST basis among avoided-cost events - the export must never
@@ -41,10 +43,20 @@ export interface MeterReport {
   methodology_note: string;
 }
 
+const MODEL_EXPR = `lower(coalesce(payload->>'model_used', payload->>'model_requested',''))`;
 const SLICE_SQL: Record<string, string> = {
   by_user: `coalesce(payload->>'user_id','unknown')`,
   by_team: `coalesce(payload->>'team_id','(no team)')`,
   by_module: `module`,
+  by_model: `coalesce(payload->>'model_used', payload->>'model_requested', '(unknown)')`,
+  // provider derived from the model name (Observe never needs a provider field)
+  by_provider: `CASE
+      WHEN ${MODEL_EXPR} LIKE 'claude%' THEN 'Anthropic'
+      WHEN ${MODEL_EXPR} LIKE 'gpt%' OR ${MODEL_EXPR} LIKE 'o1%' OR ${MODEL_EXPR} LIKE 'o3%' OR ${MODEL_EXPR} LIKE 'o4%' THEN 'OpenAI'
+      WHEN ${MODEL_EXPR} LIKE 'gemini%' THEN 'Google'
+      WHEN ${MODEL_EXPR} = '' THEN '(unknown)'
+      ELSE 'Other'
+    END`,
   by_month: `to_char(ts, 'YYYY-MM')`,
 };
 
@@ -133,6 +145,8 @@ export async function meterReport(
     by_user: await slice(SLICE_SQL.by_user),
     by_team: await slice(SLICE_SQL.by_team),
     by_module: await slice(SLICE_SQL.by_module),
+    by_model: await slice(SLICE_SQL.by_model),
+    by_provider: await slice(SLICE_SQL.by_provider),
     by_month: await slice(SLICE_SQL.by_month),
     over_seat_cap: await isOverSeatCap(ctx),
     avoided_cost_basis: worst,

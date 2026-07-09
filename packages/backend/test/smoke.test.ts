@@ -932,8 +932,12 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const html = dash.body;
   assert.ok(html.includes("Observer Dashboard")); // one-page free-tier view
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
-  // dashboard first row: Potential Savings + Actual Savings cards
-  assert.ok(html.includes("Potential Savings") && html.includes("Actual Savings"));
+  // Observer dashboard: Potential Savings card (Actual Savings is paid-only, removed)
+  assert.ok(html.includes("Potential Savings") && !html.includes("Actual Savings"));
+  // breakdowns are by model / provider / month (no by-user/team on Observer)
+  assert.ok(html.includes("By model") && html.includes("By provider") && html.includes("By month"));
+  // upgrade CTA
+  assert.ok(html.includes("Upgrade to start saving with Circulara AI"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
@@ -1119,7 +1123,13 @@ test("wave3 Reduce via gateway: routing + compression stages, M1 chain, report s
   });
   assert.equal(st.statusCode, 200);
   assert.ok(st.body.includes("Cost avoided by Circulara"));
-  assert.ok(st.body.includes("$0.0028"));
+  // avoided flows end to end. Dashboard dollars now render at 2dp, so a sub-cent
+  // fixture shows $0.00 on screen; assert the underlying figure via the report API.
+  const rep = await app.inject({
+    method: "GET", url: `/v1/meter/report?month=${month}`,
+    headers: { ...SEAT, "x-tenant-id": t.tenant_id },
+  });
+  assert.ok(Number((rep.json() as { avoided_usd: number }).avoided_usd) > 0);
 });
 
 test("wave3 Reduce passes: cap conservative rule + prompt-cache measured savings", async () => {

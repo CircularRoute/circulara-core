@@ -19,9 +19,7 @@ const esc = (s: string) =>
 const usd = (n: number) =>
   n >= 100
     ? `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
-    : n >= 1
-      ? `$${n.toFixed(2)}`
-      : `$${n.toFixed(4)}`;
+    : `$${n.toFixed(2)}`;
 const num = (n: number) => n.toLocaleString("en-US");
 const pct = (f: number) => `${Math.round(f * 100)}%`;
 
@@ -82,6 +80,17 @@ nav.tabs .tab-locked svg{width:12px;height:12px}
 .btn.ghost{background:var(--surface);color:var(--blue-deep);border-color:var(--line-strong)}
 .btn.ghost:hover{border-color:var(--blue)}
 .backlink{display:inline-block;margin-bottom:16px;color:var(--blue-deep);font-size:14px;font-weight:600;text-decoration:none}
+.upsell{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;background:linear-gradient(135deg,var(--band),#0b3157);color:#fff;border-radius:var(--r-lg);padding:22px 26px;margin:8px 0 28px}
+.upsell-text{font-size:17px;font-weight:700;letter-spacing:-.01em}
+.upsell .btn.primary{background:#fff;color:var(--band)}
+.upsell .btn.primary:hover{background:#e6edf3}
+.modal-ov{position:fixed;inset:0;background:rgba(10,37,64,.55);display:flex;align-items:center;justify-content:center;padding:24px;z-index:100}
+.modal-ov[hidden]{display:none}
+.modal{background:var(--surface);border-radius:var(--r-lg);box-shadow:0 24px 64px -20px rgba(10,37,64,.5);padding:32px;max-width:440px;width:100%;position:relative}
+.modal-x{position:absolute;top:10px;right:14px;background:none;border:0;font-size:26px;line-height:1;color:var(--ink-3);cursor:pointer}
+.modal-x:hover{color:var(--ink)}
+.modal-h{font-size:22px;font-weight:800;letter-spacing:-.01em;margin-bottom:10px}
+.modal-p{color:var(--ink-2);font-size:15px;line-height:1.55;margin-bottom:22px}
 .banner{background:var(--blue-wash);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px;color:var(--blue-deep);font-size:14px;font-weight:600;margin-bottom:24px}
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:24px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:24px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
@@ -172,6 +181,20 @@ export function renderDashboard(
   tenantQ: string,
   account = "",
 ): string {
+  // Observe breakdowns: by model / provider / month (no by-user/team - Observe
+  // has no team structure). Avoided is always $0 on free Observe, so it is omitted.
+  const bd = (title: string, col: string, rows: MeterReport["by_user"]) => `
+<h2 class="section">${title}</h2>
+<div class="tablewrap"><table><thead><tr><th>${col}</th><th class="n">Calls</th><th class="n">Tokens</th><th class="n">Spend</th></tr></thead><tbody>
+${rows.length
+  ? rows
+      .map(
+        (s) =>
+          `<tr><td>${esc(s.key)}</td><td class="n">${num(s.events)}</td><td class="n">${num(s.tokens)}</td><td class="n">${usd(s.observed_usd)}</td></tr>`,
+      )
+      .join("")
+  : `<tr><td colspan="4" style="color:var(--ink-3)">No data yet - connect the plugin to start metering.</td></tr>`}
+</tbody></table></div>`;
   const body = `
 <div class="obs-head">
   <div>
@@ -189,16 +212,12 @@ ${capBanner(r)}
     <div class="subtext">Total token usage observed</div>
     <div class="fig navy">${num(r.tokens_observed)}</div></div>
   <div class="card"><div class="label navy">Spend</div>
-    <div class="subtext">Total cost of AI calls, at provider rates</div>
+    <div class="subtext">Total cost of AI calls</div>
     <div class="fig navy">${usd(r.observed_usd)}</div></div>
   <div class="card tipcard"><div class="label grn">Potential Savings</div>
     <div class="subtext">What you could save with Circulara's paid tier</div>
     <div class="fig green">${usd((p.potential_low_usd + p.potential_high_usd) / 2)}</div>
     ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on. A midpoint estimate from published benchmarks (roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + "); Observe measures it for free, a paid tier captures it. An estimate, not a guarantee.")}</div>
-  <div class="card tipcard"><div class="label grn">Actual Savings</div>
-    <div class="subtext">Actual savings, after you switch to paid</div>
-    <div class="fig green">${usd(r.avoided_usd)}</div>
-    ${infoTip("The real dollars Circulara has saved by intervening on your calls. It stays $0 on the free Observe tier - Observe only measures, it never changes a call - and starts counting once you upgrade to a paid tier and the engines are enabled.")}</div>
 </div>
 <div class="grid">
   <div class="card"><div class="label grn">Energy Savings</div>
@@ -208,19 +227,39 @@ ${capBanner(r)}
     <div class="fig green">${co2One(r.avoided_impact.co2e_g.median)}</div>
     <div class="conf">${esc(r.avoided_impact.co2e_g.confidence)}</div></div>
 </div>
+<div class="upsell">
+  <div class="upsell-text">Upgrade to start saving with Circulara AI</div>
+  <button class="btn primary" type="button" onclick="ciraUpgrade()">Upgrade</button>
+</div>
+${bd("By model", "Model", r.by_model)}
+${bd("By provider", "Provider", r.by_provider)}
+${bd("By month", "Month", r.by_month)}
 <p class="obs-hint" id="installHint" hidden>Install Observer for one-tap access to your savings: on iPhone/iPad tap the Share button, then "Add to Home Screen". On desktop Chrome or Edge, use the install icon in the address bar.</p>
+<div class="modal-ov" id="upgradeModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="upTitle">
+    <button class="modal-x" type="button" onclick="ciraCloseUpgrade()" aria-label="Close">&times;</button>
+    <h2 class="modal-h" id="upTitle">Ready to start saving?</h2>
+    <p class="modal-p">Upgrading switches on Circulara's optimization engines, so the savings you see here become real. To get started, reach out through the contact form on our site and we'll set your paid workspace up.</p>
+    <a class="btn primary" href="https://circulara.ai" target="_blank" rel="noopener">Contact Circulara AI</a>
+  </div>
+</div>
 <script>
+function ciraUpgrade(){var m=document.getElementById('upgradeModal');if(m)m.hidden=false;}
+function ciraCloseUpgrade(){var m=document.getElementById('upgradeModal');if(m)m.hidden=true;}
 (function(){
+  var ov=document.getElementById('upgradeModal');
+  if(ov)ov.addEventListener('click',function(e){if(e.target===ov)ciraCloseUpgrade();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')ciraCloseUpgrade();});
   var deferred=null, ib=document.getElementById('installBtn'), hint=document.getElementById('installHint');
   window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();deferred=e;});
   var standalone=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
-  if(standalone&&ib){ib.style.display='none';return;} // already installed
-  if(ib)ib.addEventListener('click',function(){
+  if(standalone&&ib){ib.style.display='none';}
+  else if(ib)ib.addEventListener('click',function(){
     if(deferred){deferred.prompt();deferred.userChoice.then(function(){deferred=null;});}
     else if(hint){hint.hidden=false;hint.scrollIntoView({behavior:'smooth',block:'nearest'});}
   });
   var isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
-  if(isIOS&&hint)hint.hidden=false;
+  if(isIOS&&hint&&!standalone)hint.hidden=false;
 })();
 </script>
 `;
