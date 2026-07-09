@@ -49,6 +49,14 @@ export const TECHNIQUE_BENCHMARKS: TechniquePotential[] = [
     assumption:
       "Exact + gated semantic response cache and deterministic tool-call cache (73-90% reported in high-repetition workloads; conservative for mixed workloads)",
   },
+  {
+    key: "reuse",
+    label: "Reuse library (buy-or-build)",
+    low: 0.05,
+    high: 0.15,
+    assumption:
+      "An org-scoped library of already-produced assets (embeddings, parsed docs, datasets, research, tool results) so no agent regenerates what another already made. Starts small and compounds as your library grows.",
+  },
 ];
 
 export interface SavingsPotential {
@@ -83,7 +91,6 @@ export function savingsPotential(observedUsd: number): SavingsPotential {
       potential_high_usd: observedUsd * t.high,
     })),
     confidence: "Benchmarked",
-    methodology_note:
-      "Ranges from published benchmarks (see methodology page), composed multiplicatively - techniques overlap, so per-technique figures do not sum to the combined figure. Estimates, not guarantees; the free Observe tier exists so you see your own number before paying.",
+    methodology_note: "",
   };
 }

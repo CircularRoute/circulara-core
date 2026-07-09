@@ -222,7 +222,7 @@ export async function observerMeter(
       .map(([key, v]) => ({ key, ...v }))
       .sort((x, y) => y.savings_usd - x.savings_usd),
     cost_method:
-      "Estimated from your token usage at standard published provider rates (prompt-cache reads at the cached rate). Not a reconciliation of your actual invoice - your negotiated pricing, committed-use discounts, and credits are private to you. Savings count only evidenced optimizations (routing flagged-simple tasks to a cheaper same-provider model; detectable duplicate/cacheable calls); no speculative savings.",
+      "Estimated from your token usage at standard published provider rates (prompt-cache reads at the cached rate). Not a reconciliation of your actual invoice - your negotiated pricing, committed-use discounts, and credits are private to you.",
     carbon_confidence: "Estimated",
   };
 }

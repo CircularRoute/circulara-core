@@ -889,7 +889,8 @@ test("WS5 potential math: multiplicative composition, ordered ranges", async () 
   assert.ok(p.combined_high_pct < naiveSum);
   assert.ok(Math.abs(p.potential_low_usd - 1000 * p.combined_low_pct) < 1e-9);
   assert.equal(p.confidence, "Benchmarked");
-  assert.ok(p.methodology_note.includes("not guarantees"));
+  // Reuse library now has its own explicit technique line
+  assert.ok(p.techniques.some((t: { key: string }) => t.key === "reuse"));
 });
 
 test("WS5 dashboard/potential/statement render with brand + compliance rules", async () => {
@@ -931,7 +932,7 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const html = dash.body;
   assert.ok(html.includes("Observed spend"));
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
-  assert.ok(html.includes("never netted into savings")); // AD12 external line
+  assert.ok(html.includes("never counted as savings")); // AD12 external line (dashboard card)
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label

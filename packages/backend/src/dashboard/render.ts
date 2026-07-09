@@ -140,15 +140,16 @@ ${capBanner(r)}
 <div class="grid">
   <div class="card"><div class="label">Observed spend${r.month ? ` (${esc(r.month)})` : ""}</div>
     <div class="fig">${usd(r.observed_usd)}</div>
-    <div class="conf blue">Measured - your provider usage</div></div>
+    <div class="conf blue">What your AI calls cost, at standard provider rates</div></div>
   <div class="card"><div class="label">Tokens observed</div>
-    <div class="fig">${num(r.tokens_observed)}</div></div>
+    <div class="fig">${num(r.tokens_observed)}</div>
+    <div class="conf blue">Total usage behind that spend</div></div>
   <div class="card"><div class="label">Avoided cost</div>
     <div class="fig green">${usd(r.avoided_usd)}</div>
-    <div class="conf">Observe intervenes on nothing - this grows on paid tiers</div></div>
+    <div class="conf">What Circulara has saved so far - Observe measures only; paid tiers turn the engines on</div></div>
   <div class="card"><div class="label">External data spend</div>
     <div class="fig">${usd(r.external_spend_usd)}</div>
-    <div class="conf blue">Reported separately - never netted into savings</div></div>
+    <div class="conf blue">Data you bought through Circulara - shown on its own line, never counted as savings</div></div>
 </div>
 <div class="grid">
   <div class="card"><div class="label">Baseline energy (estimated range)</div>
@@ -192,7 +193,7 @@ ${p.techniques
   .join("")}
 </tbody></table>
 <p class="note">${esc(p.typical_note)}</p>
-<p class="note">${esc(p.methodology_note)}</p>
+${p.methodology_note ? `<p class="note">${esc(p.methodology_note)}</p>` : ""}
 `;
   return page("Savings potential", tenantQ, "potential", body, account);
 }
@@ -301,24 +302,64 @@ export function renderConnect(
   tenantQ: string,
   account = "",
 ): string {
-  const codeStyle =
-    "font-family:var(--font-fig);font-size:13px;background:var(--band);color:#E6EDF3;padding:16px;border-radius:var(--r-md);overflow-x:auto;white-space:pre;line-height:1.5";
   const envText = Object.entries(data.env)
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
   const settingsText = JSON.stringify(data.hookSettings, null, 2);
+  const block = (id: string, tag: string, text: string) => `
+<div class="cbx">
+  <div class="cbx-head"><span>${esc(tag)}</span>
+    <button class="cbx-copy" type="button" onclick="ciraCopy('${id}',this)">Copy</button></div>
+  <pre id="${id}" class="cbx-pre">${esc(text)}</pre>
+</div>`;
   const body = `
-<div class="banner">Your workspace token is a secret - anyone with it can report usage as your workspace. Do not commit it or share it. Reload this page to mint a fresh token (rotates the old one out).</div>
-<h2 class="section">1. Install the plugin</h2>
-<p class="note">Claude Code (or any MCP host). Installs the published package - no repo clone, no tsx.</p>
-<pre style="${codeStyle}">${esc(data.installCommand)}</pre>
-<h2 class="section">2. Set your workspace environment</h2>
-<p class="note">These identify your workspace + seat to the shared Observe backend. Add them to your shell/project env (or pass with <span class="range">claude mcp add --env KEY=VALUE</span>).</p>
-<pre style="${codeStyle}">${esc(envText)}</pre>
-<h2 class="section">3. Turn on metering (Claude Code hooks)</h2>
-<p class="note">Add to your <span class="range">.claude/settings.json</span>. The hooks read the same environment as above. Observe only - metering never blocks or alters your tool calls.</p>
-<pre style="${codeStyle}">${esc(settingsText)}</pre>
-<p class="note">Once installed, your calls start metering automatically - see the numbers on the <a href="/dashboard${tenantQ}">Dashboard</a>.</p>
+<style>
+.step{display:flex;align-items:center;gap:14px;margin:28px 0 6px}
+.step .n{flex:0 0 auto;width:30px;height:30px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:15px}
+.step .t{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.stepnote{color:var(--ink-2);font-size:14.5px;margin:0 0 14px 44px;max-width:640px}
+.cbx{border:1px solid var(--band);border-radius:var(--r-md);overflow:hidden;margin:0 0 8px 44px;background:var(--band)}
+.cbx-head{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 14px;color:#9fb3c8;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.cbx-copy{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--font-ui)}
+.cbx-copy:hover{background:var(--blue-deep)}
+.cbx-pre{font-family:var(--font-fig);font-size:13px;color:#E6EDF3;padding:0 14px 14px;overflow-x:auto;white-space:pre;line-height:1.6;margin:0}
+details.adv{margin:16px 0 8px 44px}
+details.adv>summary{cursor:pointer;font-weight:600;color:var(--blue-deep);font-size:14px;list-style:none}
+details.adv>summary::-webkit-details-marker{display:none}
+details.adv>summary::before{content:"+ ";font-weight:700}
+details.adv[open]>summary::before{content:"- "}
+.donenote{margin-left:44px;color:var(--ink-2);font-size:14.5px}
+@media(max-width:640px){.stepnote,.cbx,details.adv,.donenote{margin-left:0}}
+</style>
+<div class="banner">You're signed in to this workspace. Copy the two pieces below into your editor - your AI usage starts metering automatically. It never blocks or changes your calls.</div>
+
+<div class="step"><span class="n">1</span><span class="t">Install the plugin</span></div>
+<p class="stepnote">Run this once in your terminal - Claude Code, Cursor, or any MCP host. Nothing to clone or build.</p>
+${block("c-install", "Terminal", data.installCommand)}
+
+<div class="step"><span class="n">2</span><span class="t">Add your workspace keys</span></div>
+<p class="stepnote">These tell the plugin which workspace and seat you are. Paste into your project's <span class="range">.env</span> file (or pass each with <span class="range">claude mcp add --env</span>).</p>
+${block("c-env", ".env", envText)}
+
+<div class="step"><span class="n">3</span><span class="t">That's it</span></div>
+<p class="donenote">Make a few AI calls, then watch them appear on your <a href="/dashboard${tenantQ}">Dashboard</a> and <a href="/dashboard/meter${tenantQ}">Meter</a>.</p>
+
+<details class="adv"><summary>Optional: auto-meter every tool call (Claude Code hooks)</summary>
+<p class="stepnote" style="margin-left:0;margin-top:14px">Add this to <span class="range">.claude/settings.json</span>. It reads the same keys as above. Observe only - it never blocks or alters your tool calls.</p>
+${block("c-hooks", ".claude/settings.json", settingsText)}
+</details>
+
+<p class="note" style="margin-left:44px;margin-top:24px">Keep your token private - anyone with it can report usage as your workspace. Reload this page any time to mint a fresh one (the old token stops working).</p>
+
+<script>
+function ciraCopy(id, btn){
+  var el = document.getElementById(id);
+  var txt = el ? el.innerText : "";
+  var done = function(){ var o = btn.textContent; btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = o; }, 1500); };
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt).then(done, done); }
+  else { try { var r = document.createRange(); r.selectNode(el); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand("copy"); s.removeAllRanges(); done(); } catch(e){} }
+}
+</script>
 `;
   return page("Connect plugin", tenantQ, "connect", body, account);
 }
