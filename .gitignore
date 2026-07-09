@@ -9,3 +9,6 @@ data/
 .env
 .env.local
 .env.*.local
+# Credentials / private keys - NEVER commit (e.g. the MCP-registry DNS signing key).
+*.pem
+*.key

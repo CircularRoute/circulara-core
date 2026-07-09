@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.circularroute/plugin",
+  "name": "ai.circulara/plugin",
   "description": "Circulara Observe MCP plugin - meters your AI agents' token spend and carbon, free tier.",
   "repository": {
     "url": "https://github.com/CircularRoute/circulara-core",
     "source": "github",
     "subfolder": "packages/plugin"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@circulara/plugin",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "runtimeHint": "npx",
       "runtimeArguments": [
         { "type": "positional", "value": "-y" },
