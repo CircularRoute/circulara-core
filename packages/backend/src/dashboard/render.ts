@@ -197,6 +197,12 @@ ${rows.length
       .join("")
   : `<tr><td colspan="4" style="color:var(--ink-3)">No data yet - connect the plugin to start metering.</td></tr>`}
 </tbody></table></div>`;
+  // Potential impact = the same estimated optimization fraction (all techniques:
+  // reduce + recycle + reuse) applied to the observed footprint. Non-zero as soon
+  // as there is observed usage - it is what you COULD avoid on a paid tier.
+  const midPct = (p.combined_low_pct + p.combined_high_pct) / 2;
+  const potEnergyKwh = r.observed_impact.energy_kwh.median * midPct;
+  const potCo2g = r.observed_impact.co2e_g.median * midPct;
   const body = `
 <div class="obs-head">
   <div>
@@ -222,12 +228,14 @@ ${capBanner(r)}
     ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on. A midpoint estimate from published benchmarks (roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + "); Observe measures it for free, a paid tier captures it. An estimate, not a guarantee.")}</div>
 </div>
 <div class="grid">
-  <div class="card"><div class="label grn">Energy Savings</div>
-    <div class="fig green">${kwhOne(r.avoided_impact.energy_kwh.median)}</div>
-    <div class="conf">${esc(r.avoided_impact.energy_kwh.confidence)}</div></div>
-  <div class="card"><div class="label grn">Carbon Savings</div>
-    <div class="fig green">${co2One(r.avoided_impact.co2e_g.median)}</div>
-    <div class="conf">${esc(r.avoided_impact.co2e_g.confidence)}</div></div>
+  <div class="card tipcard"><div class="label grn">Potential Energy Savings</div>
+    <div class="fig green">${kwhOne(potEnergyKwh)}</div>
+    <div class="conf">Estimated</div>
+    ${infoTip("Estimated electricity you could avoid on a paid tier - the same optimization fraction behind your Potential Savings (routing to smaller models, caching, compression, reuse), applied to the energy footprint of your observed usage. An estimate, not a guarantee.")}</div>
+  <div class="card tipcard"><div class="label grn">Potential Carbon Savings</div>
+    <div class="fig green">${co2One(potCo2g)}</div>
+    <div class="conf">Estimated</div>
+    ${infoTip("Estimated CO2e you could avoid on a paid tier, from the same optimizations applied to your observed footprint. Carbon is always an estimate (grid + datacenter assumptions disclosed), never a single guaranteed number.")}</div>
 </div>
 <div class="upsell">
   <div class="upsell-text">Upgrade to start saving with Circulara AI</div>
