@@ -54,8 +54,10 @@ await control.init();
 // federated index over the launch catalogs (demand-pulled fixtures in dev)
 const { CommonsStore } = await import("./sourcing/commons.js");
 const { FederatedIndex, launchCatalogs } = await import("./sourcing/catalogs.js");
+// Do NOT init() at boot: CommonsStore lazily loads pglite on first use, so the
+// prod Postgres box does not pay the WASM cost at startup (builder.20260709.001).
+// Commons is empty + demand-seeded (D18), so it is untouched at launch.
 const commons = new CommonsStore(cfg.dataDir);
-await commons.init();
 // task 010: live free-catalog HTTP adapters when enabled; fixtures otherwise.
 // Paid adapters stay fixture-shaped (customer-account-gated, D15).
 let catalogs;
@@ -118,6 +120,7 @@ const app = buildApp({
 // B3: Render routes to 0.0.0.0:$PORT; bind 0.0.0.0 in production, localhost in dev.
 const host = process.env.CIRCULARA_HOST ?? (isProd ? "0.0.0.0" : "127.0.0.1");
 await app.listen({ port: cfg.port, host });
+const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
 console.log(
-  `circulara-core listening on ${host}:${cfg.port} (auth ${authMode}, ${process.env.DATABASE_URL ? "shared Postgres" : "PGlite"})`,
+  `circulara-core listening on ${host}:${cfg.port} (auth ${authMode}, ${process.env.DATABASE_URL ? "shared Postgres" : "PGlite"}, boot RSS ${rssMb} MB)`,
 );

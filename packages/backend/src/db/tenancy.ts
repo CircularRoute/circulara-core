@@ -21,8 +21,11 @@
  * TenantContext, which is bound to exactly one workspace schema (shared) or
  * one dedicated database.
  */
-import { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite-pgvector";
+// PGlite (dev/tests only) is LAZY-loaded: on the prod Postgres path
+// (DATABASE_URL set) the pglite + pgvector-WASM modules must never load - they
+// are the boot-memory hogs that OOM'd the 512MB Render Starter box
+// (builder.20260709.001). Type-only import is erased at compile (no runtime load).
+import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -117,8 +120,12 @@ export class ControlPlane {
   private control!: Db;
   private shared!: Db; // the one shared workspace DB (free tier)
   private dedicatedDbs = new Map<string, Db>();
-  private ownedPglite: PGlite[] = [];
+  private ownedPglite: PGliteInstance[] = [];
   private pgEnd: (() => Promise<void>) | null = null;
+  private pgliteMod?: {
+    PGlite: typeof import("@electric-sql/pglite").PGlite;
+    vector: typeof import("@electric-sql/pglite-pgvector").vector;
+  };
 
   constructor(
     private dataDir: string,
@@ -127,7 +134,20 @@ export class ControlPlane {
     private databaseUrl?: string,
   ) {}
 
-  private pgliteFor(path?: string): Db {
+  /** Lazily import the pglite + pgvector-WASM modules (dev/tests only). */
+  private async loadPglite() {
+    if (!this.pgliteMod) {
+      const [core, pgv] = await Promise.all([
+        import("@electric-sql/pglite"),
+        import("@electric-sql/pglite-pgvector"),
+      ]);
+      this.pgliteMod = { PGlite: core.PGlite, vector: pgv.vector };
+    }
+    return this.pgliteMod;
+  }
+
+  private async pgliteFor(path?: string): Promise<Db> {
+    const { PGlite, vector } = await this.loadPglite();
     const pg =
       this.inMemory || !path
         ? new PGlite({ extensions: { vector } })
@@ -151,9 +171,9 @@ export class ControlPlane {
     }
     // DEV/TESTS: embedded PGlite (control + shared as separate instances)
     if (!this.inMemory) mkdirSync(join(this.dataDir, "control"), { recursive: true });
-    this.control = this.pgliteFor(this.inMemory ? undefined : join(this.dataDir, "control"));
+    this.control = await this.pgliteFor(this.inMemory ? undefined : join(this.dataDir, "control"));
     await migrate(this.control, CONTROL_MIGRATIONS);
-    this.shared = this.pgliteFor(this.inMemory ? undefined : join(this.dataDir, "shared"));
+    this.shared = await this.pgliteFor(this.inMemory ? undefined : join(this.dataDir, "shared"));
     await this.shared.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
   }
 
@@ -252,7 +272,7 @@ export class ControlPlane {
     // dedicated: the tenant's own DB (provisioned + migrated once, then cached)
     let db = this.dedicatedDbs.get(tenantId);
     if (!db) {
-      db = this.pgliteFor(rec.storage_ref.startsWith("memory://") ? undefined : rec.storage_ref);
+      db = await this.pgliteFor(rec.storage_ref.startsWith("memory://") ? undefined : rec.storage_ref);
       await migrate(db, TENANT_MIGRATIONS);
       this.dedicatedDbs.set(tenantId, db);
     }

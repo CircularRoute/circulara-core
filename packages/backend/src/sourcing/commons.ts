@@ -18,8 +18,10 @@
  *  - No tenant data by construction: only externally-sourced redistributable
  *    assets, plus a hashed source-tenant ref for audit (never exposed).
  */
-import { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite-pgvector";
+// PGlite is LAZY-loaded (dynamic import in ensureInit): the Commons launches
+// EMPTY + demand-seeded (D18), so on the prod Postgres box it is untouched at
+// launch and must not pay the pglite-WASM boot cost (builder.20260709.001).
+import type { PGlite } from "@electric-sql/pglite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -77,6 +79,7 @@ export interface CommonsHit {
 export class CommonsStore {
   private db!: PGlite;
   private objects: FsObjectStore;
+  private initialized = false;
 
   constructor(
     private dataDir: string,
@@ -85,7 +88,18 @@ export class CommonsStore {
     this.objects = new FsObjectStore(join(dataDir, "commons-objects"));
   }
 
+  /** Idempotent. Explicit callers (tests) may call it; every method also calls
+   * ensureInit, so on prod the pglite WASM loads on FIRST Commons use, not boot. */
   async init(): Promise<void> {
+    await this.ensureInit();
+  }
+
+  private async ensureInit(): Promise<void> {
+    if (this.initialized) return;
+    const [{ PGlite }, { vector }] = await Promise.all([
+      import("@electric-sql/pglite"),
+      import("@electric-sql/pglite-pgvector"),
+    ]);
     if (this.inMemory) {
       this.db = new PGlite({ extensions: { vector } });
     } else {
@@ -94,10 +108,12 @@ export class CommonsStore {
       this.db = new PGlite(dir, { extensions: { vector } });
     }
     await this.db.exec(COMMONS_MIGRATION);
+    this.initialized = true;
   }
 
   /** The ONLY write path (AD9 capture-on-pull). License + scan gates inside. */
   async admit(input: CommonsAdmitInput): Promise<CommonsAdmitResult> {
+    await this.ensureInit();
     // HARD GATE (D14): true admits; false/unknown never pools. No override.
     if (input.license?.redistributable !== true)
       return { admitted: false, reason: "license gate: not verifiably redistributable (D14 hard gate)" };
@@ -149,6 +165,7 @@ export class CommonsStore {
 
   /** Multi-tenant read: exact fingerprint lookup. */
   async lookup(exactFp: string): Promise<CommonsHit | null> {
+    await this.ensureInit();
     const r = await this.db.query<CommonsHit>(
       `SELECT exact_fp, asset_type, description, source, license, checksum, quality
          FROM commons_assets WHERE exact_fp = $1`,
@@ -169,6 +186,7 @@ export class CommonsStore {
   }
 
   async stats(): Promise<{ assets: number; total_uses: number }> {
+    await this.ensureInit();
     const r = await this.db.query<{ assets: number; total_uses: string }>(
       `SELECT count(*)::int AS assets,
               coalesce(sum((quality->>'num_uses')::int),0)::text AS total_uses
@@ -178,6 +196,6 @@ export class CommonsStore {
   }
 
   async close(): Promise<void> {
-    await this.db.close();
+    if (this.initialized) await this.db.close();
   }
 }

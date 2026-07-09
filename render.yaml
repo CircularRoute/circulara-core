@@ -16,9 +16,11 @@ services:
     name: circulara-observe-backend
     runtime: node
     plan: starter
-    rootDir: .                              # install at workspace ROOT so npm links
-    buildCommand: npm install --include=dev              # the @circulara/schema workspace sibling
-    startCommand: npm run start -w @circulara/backend   # (unpublished; would 404 from packages/backend)
+    rootDir: .                              # install at workspace ROOT so npm links @circulara/schema
+    # dev deps (esbuild + tsx) are needed at BUILD only; runtime is compiled dist/main.js on
+    # plain node (no tsx resident) - builder.20260709.001 memory fix for the 512MB Starter box.
+    buildCommand: npm install --include=dev && npm run build -w @circulara/backend
+    startCommand: npm run start -w @circulara/backend   # now: node dist/main.js
     healthCheckPath: /healthz
     autoDeploy: false             # deploy on explicit founder go, not on push
     envVars:
