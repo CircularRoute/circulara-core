@@ -1,4 +1,3 @@
-#!/usr/bin/env npx tsx
 /**
  * Wave 4 - Claude Code PreToolUse hook: the Cost-Controller + tool-call cache
  * client wiring (closes wave-3 flag 3 - the controller now actually blocks).

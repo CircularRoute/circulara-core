@@ -1,4 +1,3 @@
-#!/usr/bin/env npx tsx
 /**
  * WS1 - Claude Code hook (AD3 path A capture).
  *

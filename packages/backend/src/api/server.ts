@@ -25,6 +25,7 @@ import {
   renderPotential,
   renderStatement,
   renderObserverMeter,
+  renderConnect,
 } from "../dashboard/render.js";
 import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
@@ -783,6 +784,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   interface DashScope {
     ctx: Awaited<ReturnType<ControlPlane["contextFor"]>>;
     tenantId: string;
+    /** the signed-in user's email when cookie-authed; undefined in dev-token mode */
+    email?: string;
     /** query string for tab/download links, correct for the active auth mode */
     mkQ: (month?: string) => string;
     /** header account block (email + Sign out) when cookie-authed; else "" */
@@ -802,7 +805,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           const ctx = await deps.control.contextFor(s.tenant_id);
           const mkQ = (month?: string) => (month ? `?month=${month}` : "");
           const account = `<span class="crumb">${escAttr(s.email)}</span> &middot; <a class="crumb" href="/auth/logout">Sign out</a>`;
-          return { ctx, tenantId: s.tenant_id, mkQ, account };
+          return { ctx, tenantId: s.tenant_id, email: s.email, mkQ, account };
         } catch {
           // workspace vanished under a live session -> re-auth
         }
@@ -906,17 +909,65 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get("/dashboard/esg.json", (req, reply) => dashEsg(req, reply, false));
   app.get("/dashboard/esg.csv", (req, reply) => dashEsg(req, reply, true));
 
-  // Per-workspace plugin install token (free Observe). The plugin sends this as
-  // CIRCULARA_TOKEN. Session cookie (dashboard "Connect plugin") OR bearer admin.
-  // Replaces the dev static tokens as the production install path.
+  // builder.20260708.002: self-serve install strings. The published plugin is
+  // `npx -y -p @circulara/plugin <bin>` (Path A, dist bundled with schema inlined).
+  const INSTALL_COMMAND = "claude mcp add circulara -- npx -y -p @circulara/plugin circulara-mcp";
+  const HOOK_SETTINGS = {
+    hooks: {
+      PreToolUse: [
+        { matcher: "*", hooks: [{ type: "command", command: "npx -y -p @circulara/plugin circulara-hook-pre" }] },
+      ],
+      PostToolUse: [
+        { matcher: "*", hooks: [{ type: "command", command: "npx -y -p @circulara/plugin circulara-hook" }] },
+      ],
+    },
+  };
+
+  // The ready-to-paste onboarding block config.ts needs. Mints (or reuses) the
+  // caller's human seat and a per-workspace signed install token.
+  const buildOnboarding = async (tenantId: string, userId: string) => {
+    const ctx = await deps.control.contextFor(tenantId);
+    const existing = await ctx.db.query<{ seat_id: string }>(
+      `SELECT seat_id FROM seats WHERE user_id = $1 AND identity_type = 'human' AND active LIMIT 1`,
+      [userId],
+    );
+    const seatId =
+      existing.rows[0]?.seat_id ??
+      (await provisionSeat(ctx, { identity_type: "human", user_id: userId }, "admin")).seat_id;
+    const token = await deps.auth.mintWorkspaceToken(tenantId);
+    const backendUrl = deps.web?.baseUrl ?? "";
+    return {
+      tenant_id: tenantId,
+      seat_id: seatId,
+      user_id: userId,
+      token,
+      backend_url: backendUrl,
+      install_command: INSTALL_COMMAND,
+      // exact field names config.ts (loadPluginConfig) reads
+      env: {
+        CIRCULARA_BACKEND_URL: backendUrl,
+        CIRCULARA_TENANT_ID: tenantId,
+        CIRCULARA_TOKEN: token,
+        CIRCULARA_SEAT_ID: seatId,
+        CIRCULARA_USER_ID: userId,
+      },
+      hook_settings: HOOK_SETTINGS,
+    };
+  };
+
+  // Per-workspace plugin onboarding (free Observe). The plugin sends CIRCULARA_TOKEN.
+  // Session cookie (dashboard "Connect plugin") OR bearer admin. Replaces the dev
+  // static tokens as the production install path.
   app.get("/v1/workspace/plugin-token", async (req, reply) => {
     let tenantId: string | undefined;
     let role: Role | undefined;
+    let userId: string | undefined;
     if (deps.web) {
       const s = await sessionFromRequest(deps.web, req);
       if (s) {
         tenantId = s.tenant_id;
         role = s.role === "admin" ? "admin" : "seat";
+        userId = s.email;
       }
     }
     if (!tenantId) {
@@ -927,20 +978,32 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           return reply.status(403).send({ error: "credential is bound to a different tenant (BL1)" });
         tenantId = hdr;
         role = res.role;
+        userId = (req.headers["x-user-id"] as string | undefined) ?? `admin@${hdr}`;
       }
     }
     if (!tenantId)
       return reply.status(401).send({ error: "sign in to the dashboard or provide an admin token" });
     if (role !== "admin")
       return reply.status(403).send({ error: "admin only" });
-    const token = await deps.auth.mintWorkspaceToken(tenantId);
-    const base = deps.web?.baseUrl ?? "";
+    const o = await buildOnboarding(tenantId, userId!);
     return {
-      tenant_id: tenantId,
-      token,
-      note: "Set these in your plugin config (.env). Treat the token like a password; re-mint here to rotate.",
-      config: { CIRCULARA_BASE_URL: base, CIRCULARA_TENANT_ID: tenantId, CIRCULARA_TOKEN: token },
+      ...o,
+      note: "Set these in your plugin env. Treat CIRCULARA_TOKEN like a password; re-mint here to rotate.",
     };
+  });
+
+  // The onboarding PAGE: install command + copy-paste env block + hook snippet.
+  app.get("/dashboard/connect", async (req, reply) => {
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const o = await buildOnboarding(g.tenantId, g.email ?? `admin@${g.tenantId}`);
+    return reply.type("text/html").send(
+      renderConnect(
+        { installCommand: o.install_command, env: o.env, hookSettings: HOOK_SETTINGS },
+        g.mkQ(),
+        g.account,
+      ),
+    );
   });
 
   // ---- wave 8: per-seat billing, TEST MODE only (no live charges) ----

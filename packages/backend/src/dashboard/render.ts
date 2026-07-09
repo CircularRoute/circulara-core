@@ -93,6 +93,7 @@ function page(title: string, tenantQ: string, active: string, body: string, acco
     ["meter", "Meter", `/dashboard/meter${tenantQ}`],
     ["potential", "Savings potential", `/dashboard/potential${tenantQ}`],
     ["statement", "Monthly statement", `/dashboard/statement${tenantQ}`],
+    ["connect", "Connect plugin", `/dashboard/connect${tenantQ}`],
   ]
     .map(
       ([k, label, href]) =>
@@ -287,4 +288,37 @@ ${readyRows || '<tr><td colspan="6" style="color:var(--ink-3)">no task types obs
 <div class="banner" style="margin-top:24px">Counts, not content - Observer meters your AI spend without reading your prompts, outputs, or code.</div>
 `;
   return page("Meter", tenantQ, "meter", body, account);
+}
+
+/** builder.20260708.002 - the "Connect plugin" onboarding page: one install
+ * command + a copy-paste CIRCULARA_* env block + the Claude Code hook snippet. */
+export function renderConnect(
+  data: {
+    installCommand: string;
+    env: Record<string, string>;
+    hookSettings: unknown;
+  },
+  tenantQ: string,
+  account = "",
+): string {
+  const codeStyle =
+    "font-family:var(--font-fig);font-size:13px;background:var(--band);color:#E6EDF3;padding:16px;border-radius:var(--r-md);overflow-x:auto;white-space:pre;line-height:1.5";
+  const envText = Object.entries(data.env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+  const settingsText = JSON.stringify(data.hookSettings, null, 2);
+  const body = `
+<div class="banner">Your workspace token is a secret - anyone with it can report usage as your workspace. Do not commit it or share it. Reload this page to mint a fresh token (rotates the old one out).</div>
+<h2 class="section">1. Install the plugin</h2>
+<p class="note">Claude Code (or any MCP host). Installs the published package - no repo clone, no tsx.</p>
+<pre style="${codeStyle}">${esc(data.installCommand)}</pre>
+<h2 class="section">2. Set your workspace environment</h2>
+<p class="note">These identify your workspace + seat to the shared Observe backend. Add them to your shell/project env (or pass with <span class="range">claude mcp add --env KEY=VALUE</span>).</p>
+<pre style="${codeStyle}">${esc(envText)}</pre>
+<h2 class="section">3. Turn on metering (Claude Code hooks)</h2>
+<p class="note">Add to your <span class="range">.claude/settings.json</span>. The hooks read the same environment as above. Observe only - metering never blocks or alters your tool calls.</p>
+<pre style="${codeStyle}">${esc(settingsText)}</pre>
+<p class="note">Once installed, your calls start metering automatically - see the numbers on the <a href="/dashboard${tenantQ}">Dashboard</a>.</p>
+`;
+  return page("Connect plugin", tenantQ, "connect", body, account);
 }

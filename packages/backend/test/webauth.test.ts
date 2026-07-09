@@ -248,9 +248,19 @@ test("plugin-token: minted for a session admin, BL1-bound, and authorizes the me
     method: "GET", url: "/v1/workspace/plugin-token", headers: { cookie: `cira_session=${session}` },
   });
   assert.equal(pt.statusCode, 200);
-  const body = pt.json() as { tenant_id: string; token: string; config: Record<string, string> };
+  const body = pt.json() as {
+    tenant_id: string; seat_id: string; user_id: string; token: string;
+    install_command: string; env: Record<string, string>;
+  };
   assert.equal(body.tenant_id, tenantId);
-  assert.ok(body.token && body.config.CIRCULARA_TOKEN === body.token);
+  assert.equal(body.user_id, "plug@co.com");
+  assert.ok(body.token && body.env.CIRCULARA_TOKEN === body.token);
+  // env block carries the exact fields loadPluginConfig() reads (task 002)
+  assert.equal(body.env.CIRCULARA_BACKEND_URL, "http://localhost:8787");
+  assert.equal(body.env.CIRCULARA_TENANT_ID, tenantId);
+  assert.equal(body.env.CIRCULARA_SEAT_ID, body.seat_id);
+  assert.equal(body.env.CIRCULARA_USER_ID, "plug@co.com");
+  assert.ok(body.install_command.includes("npx -y -p @circulara/plugin circulara-mcp"));
 
   // the workspace token authorizes a metered call for ITS tenant...
   const ok = await app.inject({
@@ -266,6 +276,24 @@ test("plugin-token: minted for a session admin, BL1-bound, and authorizes the me
     headers: { authorization: `Bearer ${body.token}`, "x-tenant-id": other.tenant_id },
   });
   assert.equal(cross.statusCode, 403);
+});
+
+test("connect page: renders install command + env block + hook snippet", async () => {
+  sentEmails = [];
+  await app.inject({
+    method: "POST", url: "/auth/email/start",
+    payload: { email: "connect@co.com" }, headers: { "content-type": "application/json" },
+  });
+  const token = sentEmails[0].html.match(/token=([A-Za-z0-9._-]+)/)![1];
+  const cb = await app.inject({ method: "GET", url: `/auth/magic/callback?token=${token}` });
+  const session = cookieVal(cb.headers["set-cookie"], "cira_session")!;
+  const page = await app.inject({
+    method: "GET", url: "/dashboard/connect", headers: { cookie: `cira_session=${session}` },
+  });
+  assert.equal(page.statusCode, 200);
+  assert.ok(page.body.includes("npx -y -p @circulara/plugin circulara-mcp")); // install cmd
+  assert.ok(page.body.includes("CIRCULARA_BACKEND_URL=") && page.body.includes("CIRCULARA_SEAT_ID="));
+  assert.ok(page.body.includes("circulara-hook-pre") && page.body.includes("PostToolUse")); // hook snippet
 });
 
 test("logout clears the session cookie", async () => {

@@ -1,4 +1,3 @@
-#!/usr/bin/env npx tsx
 /**
  * WS1 - Circulara MCP server (stdio). AD3 path C: advise/report tools that
  * work in EVERY MCP host (Claude Code, Cursor, any). Enforcement rides path A
