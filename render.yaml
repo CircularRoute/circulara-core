@@ -39,7 +39,8 @@ services:
       - key: CIRCULARA_LIVE_CATALOGS
         value: "true"              # live free catalogs (HF/CKAN/RODA)
       - key: CIRCULARA_EMAIL_FROM
-        value: noreply@circulara.ai  # magic-link sender (verify the domain in Brevo)
+        value: hello@circularroute.com  # magic-link sender (Brevo-verified sender,
+                                        # same as the marketing site's contact form)
       # --- secrets: set in the Render dashboard, sync:false (never in repo) ---
       - key: CIRCULARA_MASTER_KEY          # 32-byte hex KEK (envelope encryption)
         sync: false

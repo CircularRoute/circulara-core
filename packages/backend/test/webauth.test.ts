@@ -164,6 +164,32 @@ test("invalid email is rejected; bad magic token shows an error, sets no session
   assert.equal(cookieVal(cb.headers["set-cookie"], "cira_session"), null);
 });
 
+test("magic link is single-use: a reused link is rejected", async () => {
+  sentEmails = [];
+  await app.inject({
+    method: "POST", url: "/auth/email/start",
+    payload: { email: "reuse@co.com" }, headers: { "content-type": "application/json" },
+  });
+  const token = sentEmails[0].html.match(/token=([A-Za-z0-9._-]+)/)![1];
+  const first = await app.inject({ method: "GET", url: `/auth/magic/callback?token=${token}` });
+  assert.equal(first.statusCode, 302); // works the first time
+  const second = await app.inject({ method: "GET", url: `/auth/magic/callback?token=${token}` });
+  assert.equal(second.statusCode, 400); // reuse rejected
+  assert.ok(second.body.includes("already been used"));
+  assert.equal(cookieVal(second.headers["set-cookie"], "cira_session"), null);
+});
+
+test("email link requests are rate limited per address", async () => {
+  let last;
+  for (let i = 0; i < 6; i++)
+    last = await app.inject({
+      method: "POST", url: "/auth/email/start",
+      payload: { email: "spammy@co.com" }, headers: { "content-type": "application/json" },
+    });
+  assert.equal(last!.statusCode, 429); // 6th within the window is blocked (limit 5)
+  assert.ok(last!.body.includes("recently"));
+});
+
 test("dashboard: session cookie authenticates; no cookie redirects to /login", async () => {
   // sign in via magic link to get a cookie
   sentEmails = [];

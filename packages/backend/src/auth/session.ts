@@ -14,6 +14,7 @@
  *  - oauth_state: CSRF state for the Google authorization-code flow.
  */
 import { SignJWT, jwtVerify } from "jose";
+import { randomUUID } from "node:crypto";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -69,6 +70,7 @@ export async function signMagic(
 ): Promise<string> {
   return new SignJWT({ typ: "magic", email, next: next ?? null })
     .setProtectedHeader({ alg: "HS256" })
+    .setJti(randomUUID()) // single-use id: consumed once at /auth/magic/callback
     .setIssuedAt()
     .setExpirationTime(nowSec() + ttlSeconds)
     .sign(secret);
@@ -77,12 +79,17 @@ export async function signMagic(
 export async function verifyMagic(
   secret: Buffer,
   token: string,
-): Promise<{ email: string; next?: string } | null> {
+): Promise<{ email: string; next?: string; jti: string; expSec: number } | null> {
   try {
     const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
     const p = payload as { typ?: string; email?: unknown; next?: unknown };
     if (p.typ !== "magic" || typeof p.email !== "string") return null;
-    return { email: p.email, next: typeof p.next === "string" ? p.next : undefined };
+    return {
+      email: p.email,
+      next: typeof p.next === "string" ? p.next : undefined,
+      jti: typeof payload.jti === "string" ? payload.jti : "",
+      expSec: typeof payload.exp === "number" ? payload.exp : nowSec(),
+    };
   } catch {
     return null;
   }

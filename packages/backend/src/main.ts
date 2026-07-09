@@ -91,8 +91,9 @@ if (authMode === "consumer") {
     email: brevo
       ? {
           brevoApiKey: brevo,
-          fromEmail: process.env.CIRCULARA_EMAIL_FROM ?? "noreply@circulara.ai",
-          fromName: process.env.CIRCULARA_EMAIL_FROM_NAME ?? "Circulara",
+          // Brevo-verified sender (same as the marketing site's contact form).
+          fromEmail: process.env.CIRCULARA_EMAIL_FROM ?? "hello@circularroute.com",
+          fromName: process.env.CIRCULARA_EMAIL_FROM_NAME ?? "Circulara AI",
         }
       : undefined,
   };

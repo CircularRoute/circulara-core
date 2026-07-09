@@ -200,6 +200,27 @@ export function registerWebAuth(app: FastifyInstance, web: WebAuthDeps): void {
     reply.header("set-cookie", cookies);
   };
 
+  // ---- anti-abuse for magic links (single instance; in-memory is fine) ----
+  // (a) sliding-window rate limit on link requests, per email + per client IP.
+  const hits = new Map<string, number[]>();
+  const rateOk = (key: string, max: number, windowMs = 15 * 60 * 1000): boolean => {
+    const now = Date.now();
+    const arr = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+    if (arr.length >= max) {
+      hits.set(key, arr);
+      return false;
+    }
+    arr.push(now);
+    hits.set(key, arr);
+    return true;
+  };
+  const clientIp = (req: FastifyRequest): string =>
+    (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0].trim() ||
+    req.ip ||
+    "unknown";
+  // (b) single-use: a magic token's id is consumed on first successful callback.
+  const usedMagic = new Map<string, number>(); // jti -> expiry (epoch seconds)
+
   // Resolve (or self-serve create) the workspace for a VERIFIED email.
   const resolveWorkspace = async (
     email: string,
@@ -251,6 +272,17 @@ export function registerWebAuth(app: FastifyInstance, web: WebAuthDeps): void {
         .status(400)
         .type("text/html")
         .send(loginPage(web, { error: "Enter a valid email address." }));
+    // rate limit: per email (5 / 15 min) and per client IP (30 / 15 min)
+    if (!rateOk(`em:${email}`, 5) || !rateOk(`ip:${clientIp(req)}`, 30))
+      return reply
+        .status(429)
+        .type("text/html")
+        .send(
+          loginPage(web, {
+            error:
+              "You've requested several sign-in links recently. Check your inbox, or wait a few minutes and try again.",
+          }),
+        );
     const next = safeNext((req.query as { next?: string }).next);
     const token = await signMagic(web.sessionSecret, email, MAGIC_TTL_SECONDS, next);
     const link = `${web.baseUrl}/auth/magic/callback?token=${encodeURIComponent(token)}`;
@@ -287,6 +319,15 @@ export function registerWebAuth(app: FastifyInstance, web: WebAuthDeps): void {
         .status(400)
         .type("text/html")
         .send(loginPage(web, { error: "This sign-in link is invalid or expired. Request a new one." }));
+    // single-use: prune expired ids, reject an already-consumed link, then consume it
+    const nowSec = Math.floor(Date.now() / 1000);
+    for (const [j, exp] of usedMagic) if (exp < nowSec) usedMagic.delete(j);
+    if (v.jti && usedMagic.has(v.jti))
+      return reply
+        .status(400)
+        .type("text/html")
+        .send(loginPage(web, { error: "This sign-in link has already been used. Request a new one." }));
+    if (v.jti) usedMagic.set(v.jti, v.expSec);
     const claims = await resolveWorkspace(v.email);
     return finishLogin(reply, claims, v.next);
   });
