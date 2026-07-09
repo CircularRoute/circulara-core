@@ -59,6 +59,14 @@ export const TECHNIQUE_BENCHMARKS: TechniquePotential[] = [
   },
 ];
 
+/** Measured savings signals from THIS org's observed traffic (observer meter).
+ * Where present, they REPLACE the generic benchmark for that technique, so the
+ * potential becomes customer-specific instead of an industry average. */
+export interface PotentialSignals {
+  routingUsd?: number; // measured routing-to-cheaper-model savings
+  dedupeUsd?: number; // measured exact duplicate/cacheable-call savings
+}
+
 export interface SavingsPotential {
   observed_usd: number;
   combined_low_pct: number; // e.g. 0.27
@@ -69,28 +77,64 @@ export interface SavingsPotential {
   techniques: (TechniquePotential & {
     potential_low_usd: number;
     potential_high_usd: number;
+    measured: boolean; // true = derived from your traffic, not a benchmark
   })[];
-  confidence: "Benchmarked";
+  confidence: "Benchmarked" | "Blended";
+  basis: "benchmarked" | "blended";
   methodology_note: string;
 }
 
-export function savingsPotential(observedUsd: number): SavingsPotential {
-  const combinedLow = 1 - TECHNIQUE_BENCHMARKS.reduce((p, t) => p * (1 - t.low), 1);
-  const combinedHigh = 1 - TECHNIQUE_BENCHMARKS.reduce((p, t) => p * (1 - t.high), 1);
+/**
+ * Blended estimate: for the techniques we can SEE in your metadata (routing to a
+ * cheaper model, exact duplicate/cacheable calls) we use the MEASURED fraction of
+ * your own spend; for the rest (compression, provider prompt caching, the reuse
+ * library - which need prompt content or assets we never read) we fall back to
+ * published benchmarks. Composed multiplicatively so overlapping wins never
+ * double-count. Same call with no signals = pure benchmark (backward compatible).
+ */
+export function savingsPotential(
+  observedUsd: number,
+  signals: PotentialSignals = {},
+): SavingsPotential {
+  const measuredFrac = (v: number | undefined, cap: number): number | null =>
+    observedUsd > 0 && (v ?? 0) > 0 ? Math.min((v as number) / observedUsd, cap) : null;
+
+  const techs = TECHNIQUE_BENCHMARKS.map((t) => {
+    if (t.key === "routing") {
+      const m = measuredFrac(signals.routingUsd, t.high);
+      if (m != null) return { ...t, low: m, high: m, measured: true };
+    }
+    if (t.key === "caching") {
+      const exact = measuredFrac(signals.dedupeUsd, t.high);
+      if (exact != null) {
+        // exact duplicates measured; keep a small residual for semantic/near-dup
+        // caching we cannot detect from metadata alone
+        return { ...t, low: Math.min(exact + 0.02, t.high), high: Math.min(exact + 0.08, t.high), measured: true };
+      }
+    }
+    return { ...t, measured: false };
+  });
+
+  const combinedLow = 1 - techs.reduce((p, t) => p * (1 - t.low), 1);
+  const combinedHigh = 1 - techs.reduce((p, t) => p * (1 - t.high), 1);
+  const blended = techs.some((t) => t.measured);
+
   return {
     observed_usd: observedUsd,
     combined_low_pct: combinedLow,
     combined_high_pct: combinedHigh,
     potential_low_usd: observedUsd * combinedLow,
     potential_high_usd: observedUsd * combinedHigh,
-    typical_note:
-      "Most fleets should expect the conservative end first: 30-40% is the typical realized range once Reduce + Recycle are enabled; the Reuse library compounds beyond that over time.",
-    techniques: TECHNIQUE_BENCHMARKS.map((t) => ({
+    typical_note: blended
+      ? "Refined from your own traffic where Circulara can measure it (routing to cheaper models, duplicate/cacheable calls), plus published benchmarks for what needs your prompts or assets (compression, provider prompt caching, the reuse library). An estimate, not a guarantee."
+      : "Most fleets should expect the conservative end first: 30-40% is the typical realized range once Reduce + Recycle are enabled; the Reuse library compounds beyond that over time.",
+    techniques: techs.map((t) => ({
       ...t,
       potential_low_usd: observedUsd * t.low,
       potential_high_usd: observedUsd * t.high,
     })),
-    confidence: "Benchmarked",
+    confidence: blended ? "Blended" : "Benchmarked",
+    basis: blended ? "blended" : "benchmarked",
     methodology_note: "",
   };
 }

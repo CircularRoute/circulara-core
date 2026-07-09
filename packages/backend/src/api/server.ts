@@ -881,7 +881,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!g) return reply;
     const month = (req.query as { month?: string }).month;
     const r = await meterReport(g.ctx, month);
-    const p = savingsPotential(r.observed_usd);
+    // Blend: feed the MEASURED routing + duplicate savings from this org's own
+    // traffic into the potential estimate; benchmarks cover the rest.
+    const { observerMeter } = await import("../meter/observer.js");
+    const om = await observerMeter(g.ctx, deps.gateway.getPricing(), {
+      from: month ? `${month}-01` : undefined,
+    });
+    const p = savingsPotential(r.observed_usd, {
+      routingUsd: om.savings_source.routing_usd,
+      dedupeUsd: om.savings_source.dedupe_usd,
+    });
     return reply.type("text/html").send(renderDashboard(r, p, g.mkQ(month), g.account, g.email));
   });
 

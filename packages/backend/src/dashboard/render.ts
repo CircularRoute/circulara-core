@@ -238,7 +238,7 @@ ${capBanner(r)}
   <div class="card tipcard"><div class="label grn">Potential Savings</div>
     <div class="subtext">What you could save with Circulara's paid tier</div>
     <div class="fig green">${usd((p.potential_low_usd + p.potential_high_usd) / 2)}</div>
-    ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on. A midpoint estimate from published benchmarks (roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + "); Observe measures it for free, a paid tier captures it. An estimate, not a guarantee.")}</div>
+    ${infoTip("What you could save on your observed spend on a paid tier. " + (p.basis === "blended" ? "Blended from your OWN traffic where we can measure it (routing to cheaper models, duplicate/cacheable calls), plus published benchmarks for compression, prompt caching and reuse" : "Estimated from published benchmarks across routing, caching, compression and reuse") + " - roughly " + usd(p.potential_low_usd) + " to " + usd(p.potential_high_usd) + ". An estimate, not a guarantee.")}</div>
 </div>
 <div class="grid">
   <div class="card tipcard"><div class="label grn">Potential Energy Savings</div>
