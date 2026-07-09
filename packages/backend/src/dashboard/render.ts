@@ -172,7 +172,7 @@ ${capBanner(r)}
     <div class="fig green"><span class="range">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</span></div>
     <div class="estpill">Estimated - unlock on a paid tier</div>
     ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on - routing, caching, compression, and the reuse library. Observe measures this for free so you can see the number before paying; a paid tier actually captures it. A published-benchmark range, not a guarantee.")}</div>
-  <div class="card tipcard"><div class="label">Cost avoided</div>
+  <div class="card tipcard"><div class="label">Your savings</div>
     <div class="fig green">${usd(r.avoided_usd)}</div>
     <div class="conf">Actual savings, once the engines run</div>
     ${infoTip("The real dollars Circulara has saved by intervening on your calls. It stays $0 on the free Observe tier - Observe only measures, it never changes a call - and starts counting once you upgrade to a paid tier and the engines are enabled.")}</div>

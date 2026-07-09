@@ -932,8 +932,8 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const html = dash.body;
   assert.ok(html.includes("Observed spend"));
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
-  // dashboard first row: Avoidable cost (potential) + Cost avoided (actual) cards
-  assert.ok(html.includes("Avoidable cost") && html.includes("Cost avoided"));
+  // dashboard first row: Avoidable cost (potential) + Your savings (actual) cards
+  assert.ok(html.includes("Avoidable cost") && html.includes("Your savings"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
