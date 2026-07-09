@@ -3,7 +3,11 @@
  * Every tenant-scoped route resolves a TenantContext from the x-tenant-id
  * header via the control plane; that is the only door.
  */
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyRequest,
+  type FastifyReply,
+} from "fastify";
 import { ZodError } from "zod";
 import { ControlPlane } from "../db/tenancy.js";
 import {
@@ -37,6 +41,11 @@ import type { FederatedIndex } from "../sourcing/catalogs.js";
 import { randomUUID } from "node:crypto";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
+import {
+  registerWebAuth,
+  sessionFromRequest,
+  type WebAuthDeps,
+} from "../auth/webauth.js";
 
 export interface AppDeps {
   control: ControlPlane;
@@ -47,6 +56,10 @@ export interface AppDeps {
   index: FederatedIndex;
   /** wave 6: LLM classifier factory (BYO cheap model); null = unclassified-conservative */
   classifierFor?: (ctx: TenantContext) => Promise<ClassifierPort | null>;
+  /** builder.20260708.001: consumer dashboard login (email + Google). When set,
+   * the dashboard authenticates via a signed session cookie; absent = dev token
+   * fallback only (tests / local). */
+  web?: WebAuthDeps;
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -758,63 +771,176 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return meterReport(ctx, month);
   });
 
-  // ---- WS5: Observe dashboard (server-rendered, Ledger Light) ----
-  // Auth: bearer header OR ?token= (dev convenience; a browser session flow
-  // replaces the query token before public launch - flagged in launch prep).
-  const dashAuth = async (req: FastifyRequest) => {
-    const q = req.query as { token?: string; tenant?: string; month?: string };
+  // ---- consumer dashboard login wiring (builder.20260708.001) ----
+  // When web auth is configured, register /login + /auth/* and authenticate the
+  // dashboard via a signed session cookie. The dev `?token=`/`?tenant=` path is
+  // kept as a fallback (dev mode only) for local use + the sprint test suite.
+  if (deps.web) registerWebAuth(app, deps.web);
+
+  const escAttr = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  interface DashScope {
+    ctx: Awaited<ReturnType<ControlPlane["contextFor"]>>;
+    tenantId: string;
+    /** query string for tab/download links, correct for the active auth mode */
+    mkQ: (month?: string) => string;
+    /** header account block (email + Sign out) when cookie-authed; else "" */
+    account: string;
+  }
+
+  // Returns the resolved scope, or null after writing a 401/redirect to reply.
+  const dashGuard = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<DashScope | null> => {
+    // 1. signed session cookie (consumer / production)
+    if (deps.web) {
+      const s = await sessionFromRequest(deps.web, req);
+      if (s) {
+        try {
+          const ctx = await deps.control.contextFor(s.tenant_id);
+          const mkQ = (month?: string) => (month ? `?month=${month}` : "");
+          const account = `<span class="crumb">${escAttr(s.email)}</span> &middot; <a class="crumb" href="/auth/logout">Sign out</a>`;
+          return { ctx, tenantId: s.tenant_id, mkQ, account };
+        } catch {
+          // workspace vanished under a live session -> re-auth
+        }
+      }
+    }
+    // 2. dev token/tenant fallback (dev static tokens verify only in dev mode)
+    const q = req.query as { token?: string; tenant?: string };
     const authz = req.headers.authorization ?? (q.token ? `Bearer ${q.token}` : undefined);
     const res = await deps.auth.verify(authz);
-    if (!res.ok)
-      throw Object.assign(new Error("unauthorized"), { statusCode: 401 });
     const tenantId = q.tenant ?? (req.headers["x-tenant-id"] as string | undefined);
-    if (!tenantId)
-      throw Object.assign(new Error("tenant required (?tenant=)"), { statusCode: 400 });
-    try {
-      return { ctx: await deps.control.contextFor(tenantId), q, tenantId };
-    } catch {
-      throw Object.assign(new Error("unknown tenant"), { statusCode: 404 });
+    if (res.ok && tenantId) {
+      if (res.tenant_id != null && res.tenant_id !== tenantId) {
+        reply.status(403).send({ error: "credential is bound to a different tenant (BL1)" });
+        return null;
+      }
+      try {
+        const ctx = await deps.control.contextFor(tenantId);
+        const mkQ = (month?: string) => {
+          const p = [`tenant=${tenantId}`];
+          if (q.token) p.push(`token=${q.token}`);
+          if (month) p.push(`month=${month}`);
+          return `?${p.join("&")}`;
+        };
+        return { ctx, tenantId, mkQ, account: "" };
+      } catch {
+        reply.status(404).send({ error: "unknown tenant" });
+        return null;
+      }
     }
+    // 3. unauthenticated: send humans to /login (consumer), else 401 (dev/tests)
+    if (deps.web && deps.web.mode !== "dev") {
+      reply.redirect("/login");
+      return null;
+    }
+    reply.status(401).send({ error: "unauthorized" });
+    return null;
   };
-  const tenantQ = (tenantId: string, q: { token?: string }, month?: string) =>
-    `?tenant=${tenantId}${q.token ? `&token=${q.token}` : ""}${month ? `&month=${month}` : ""}`;
 
   app.get("/dashboard", async (req, reply) => {
-    const { ctx, q, tenantId } = await dashAuth(req);
-    const r = await meterReport(ctx, q.month);
-    return reply.type("text/html").send(renderDashboard(r, tenantQ(tenantId, q, q.month)));
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const month = (req.query as { month?: string }).month;
+    const r = await meterReport(g.ctx, month);
+    return reply.type("text/html").send(renderDashboard(r, g.mkQ(month), g.account));
   });
 
   app.get("/dashboard/meter", async (req, reply) => {
-    const { ctx, q, tenantId } = await dashAuth(req);
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const month = (req.query as { month?: string }).month;
     const { observerMeter, routingReadiness } = await import("../meter/observer.js");
-    const m = await observerMeter(ctx, deps.gateway.getPricing(), { from: q.month ? `${q.month}-01` : undefined });
-    const rr = await routingReadiness(ctx, deps.gateway.getPricing(), {});
-    return reply.type("text/html").send(renderObserverMeter(m, rr.types, tenantQ(tenantId, q)));
+    const m = await observerMeter(g.ctx, deps.gateway.getPricing(), { from: month ? `${month}-01` : undefined });
+    const rr = await routingReadiness(g.ctx, deps.gateway.getPricing(), {});
+    return reply.type("text/html").send(renderObserverMeter(m, rr.types, g.mkQ(), g.account));
   });
 
   app.get("/dashboard/potential", async (req, reply) => {
-    const { ctx, q, tenantId } = await dashAuth(req);
-    const r = await meterReport(ctx, q.month);
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const month = (req.query as { month?: string }).month;
+    const r = await meterReport(g.ctx, month);
     const p = savingsPotential(r.observed_usd);
-    return reply
-      .type("text/html")
-      .send(renderPotential(r, p, tenantQ(tenantId, q, q.month)));
+    return reply.type("text/html").send(renderPotential(r, p, g.mkQ(month), g.account));
   });
 
   app.get("/dashboard/statement", async (req, reply) => {
-    const { ctx, q, tenantId } = await dashAuth(req);
-    // default: current month
-    const month = q.month ?? new Date().toISOString().slice(0, 7);
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const month = (req.query as { month?: string }).month ?? new Date().toISOString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(month))
       throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
-    const r = await meterReport(ctx, month);
+    const r = await meterReport(g.ctx, month);
     const p = savingsPotential(r.observed_usd);
     const { computeInvoice } = await import("../billing/billing.js");
-    const invoice = await computeInvoice(ctx, month);
+    const invoice = await computeInvoice(g.ctx, month);
     return reply
       .type("text/html")
-      .send(renderStatement(r, p, tenantQ(tenantId, q, month), month, invoice.total_usd));
+      .send(renderStatement(r, p, g.mkQ(month), month, invoice.total_usd, g.account));
+  });
+
+  // ESG export from the dashboard (browser download). Cookie- or token-authed so
+  // the <a> links work in both consumer and dev modes; the /v1 API variant stays
+  // header-only for programmatic clients.
+  const dashEsg = async (req: FastifyRequest, reply: FastifyReply, csv: boolean) => {
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const month = (req.query as { month?: string }).month;
+    if (month && !/^\d{4}-\d{2}$/.test(month))
+      throw Object.assign(new Error("month must be YYYY-MM"), { statusCode: 400 });
+    const { esgExport, esgExportCsv } = await import("../meter/esg.js");
+    const tenant = await deps.control.getTenant(g.tenantId);
+    const report = await meterReport(g.ctx, month);
+    const exp = esgExport(report, tenant?.name ?? g.tenantId);
+    if (csv)
+      return reply
+        .type("text/csv")
+        .header("content-disposition", `attachment; filename=circulara-esg-${exp.period}.csv`)
+        .send(esgExportCsv(exp));
+    return reply.send(exp);
+  };
+  app.get("/dashboard/esg.json", (req, reply) => dashEsg(req, reply, false));
+  app.get("/dashboard/esg.csv", (req, reply) => dashEsg(req, reply, true));
+
+  // Per-workspace plugin install token (free Observe). The plugin sends this as
+  // CIRCULARA_TOKEN. Session cookie (dashboard "Connect plugin") OR bearer admin.
+  // Replaces the dev static tokens as the production install path.
+  app.get("/v1/workspace/plugin-token", async (req, reply) => {
+    let tenantId: string | undefined;
+    let role: Role | undefined;
+    if (deps.web) {
+      const s = await sessionFromRequest(deps.web, req);
+      if (s) {
+        tenantId = s.tenant_id;
+        role = s.role === "admin" ? "admin" : "seat";
+      }
+    }
+    if (!tenantId) {
+      const res = await deps.auth.verify(req.headers.authorization);
+      const hdr = req.headers["x-tenant-id"] as string | undefined;
+      if (res.ok && hdr) {
+        if (res.tenant_id != null && res.tenant_id !== hdr)
+          return reply.status(403).send({ error: "credential is bound to a different tenant (BL1)" });
+        tenantId = hdr;
+        role = res.role;
+      }
+    }
+    if (!tenantId)
+      return reply.status(401).send({ error: "sign in to the dashboard or provide an admin token" });
+    if (role !== "admin")
+      return reply.status(403).send({ error: "admin only" });
+    const token = await deps.auth.mintWorkspaceToken(tenantId);
+    const base = deps.web?.baseUrl ?? "";
+    return {
+      tenant_id: tenantId,
+      token,
+      note: "Set these in your plugin config (.env). Treat the token like a password; re-mint here to rotate.",
+      config: { CIRCULARA_BASE_URL: base, CIRCULARA_TENANT_ID: tenantId, CIRCULARA_TOKEN: token },
+    };
   });
 
   // ---- wave 8: per-seat billing, TEST MODE only (no live charges) ----

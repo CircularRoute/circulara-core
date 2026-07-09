@@ -87,7 +87,7 @@ footer.band .fig{color:#fff}
 @media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.card{padding:16px}th,td{padding:8px 10px}}
 `;
 
-function page(title: string, tenantQ: string, active: string, body: string): string {
+function page(title: string, tenantQ: string, active: string, body: string, account = ""): string {
   const tabs = [
     ["dashboard", "Dashboard", `/dashboard${tenantQ}`],
     ["meter", "Meter", `/dashboard/meter${tenantQ}`],
@@ -105,7 +105,7 @@ function page(title: string, tenantQ: string, active: string, body: string): str
 <body><div class="wrap">
 <header class="top">
   <div class="brand"><span class="mark" aria-hidden="true"></span>Circulara AI</div>
-  <div class="crumb">Observe (free tier)</div>
+  <div class="crumb">${account || "Observe (free tier)"}</div>
 </header>
 <nav class="tabs">${tabs}</nav>
 ${body}
@@ -122,7 +122,7 @@ const capWatermark = (r: MeterReport) =>
     ? `<div class="watermark">Generated over the free-tier seat limit</div>`
     : "";
 
-export function renderDashboard(r: MeterReport, tenantQ: string): string {
+export function renderDashboard(r: MeterReport, tenantQ: string, account = ""): string {
   const sliceTable = (title: string, rows: MeterReport["by_user"]) => `
 <h2 class="section">${title}</h2>
 <table><thead><tr><th>Key</th><th class="n">Events</th><th class="n">Tokens</th><th class="n">Observed spend</th><th class="n">Avoided</th></tr></thead><tbody>
@@ -163,13 +163,14 @@ ${sliceTable("By team", r.by_team)}
 ${sliceTable("By module", r.by_module)}
 ${sliceTable("By month", r.by_month)}
 `;
-  return page("Observe dashboard", tenantQ, "dashboard", body);
+  return page("Observe dashboard", tenantQ, "dashboard", body, account);
 }
 
 export function renderPotential(
   r: MeterReport,
   p: SavingsPotential,
   tenantQ: string,
+  account = "",
 ): string {
   const body = `
 ${capBanner(r)}
@@ -192,7 +193,7 @@ ${p.techniques
 <p class="note">${esc(p.typical_note)}</p>
 <p class="note">${esc(p.methodology_note)}</p>
 `;
-  return page("Savings potential", tenantQ, "potential", body);
+  return page("Savings potential", tenantQ, "potential", body, account);
 }
 
 export function renderStatement(
@@ -201,6 +202,7 @@ export function renderStatement(
   tenantQ: string,
   month: string,
   feeUsd = 0, // Observe = $0; paid tiers wire computeInvoice (wave 8)
+  account = "",
 ): string {
   const breakdown = (title: string, rows: MeterReport["by_user"]) => `
 <h2 class="section">${title}</h2>
@@ -236,9 +238,9 @@ ${breakdown("By module", r.by_module)}
   Fee this month: <span class="fig" style="font-size:22px">${usd(feeUsd)}</span>${feeUsd === 0 ? " - Observe is free forever. See your savings potential above; Team turns interventions on." : " - next to the savings above, the invoice justifies itself."}
 </footer>
 <p class="note">${esc(r.methodology_note)}
-ESG-ready export: <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}">JSON</a> - <a href="/v1/meter/esg-export${tenantQ}&month=${esc(month)}&format=csv">CSV</a></p>
+ESG-ready export: <a href="/dashboard/esg.json${tenantQ}">JSON</a> - <a href="/dashboard/esg.csv${tenantQ}">CSV</a></p>
 `;
-  return page(`Statement ${month}`, tenantQ, "statement", body);
+  return page(`Statement ${month}`, tenantQ, "statement", body, account);
 }
 
 /** Task 011 - the consolidated Observer meter: actual vs potential, four ways,
@@ -247,6 +249,7 @@ export function renderObserverMeter(
   m: import("../meter/observer.js").ObserverMeter,
   readiness: import("../meter/observer.js").ReadinessRow[],
   tenantQ: string,
+  account = "",
 ): string {
   const kwh = (r: { low: number; high: number }) =>
     `${(r.low).toFixed(r.low < 1 ? 3 : 1)} - ${(r.high).toFixed(r.high < 1 ? 3 : 1)} kWh`;
@@ -283,5 +286,5 @@ ${readyRows || '<tr><td colspan="6" style="color:var(--ink-3)">no task types obs
 <p class="note">${esc(m.cost_method)}</p>
 <div class="banner" style="margin-top:24px">Counts, not content - Observer meters your AI spend without reading your prompts, outputs, or code.</div>
 `;
-  return page("Meter", tenantQ, "meter", body);
+  return page("Meter", tenantQ, "meter", body, account);
 }

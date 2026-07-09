@@ -200,6 +200,47 @@ export class ControlPlane {
     return this.control;
   }
 
+  // ---- workspace membership (consumer dashboard login, builder.20260708.001) --
+
+  /** Grant an email access to a workspace (idempotent). */
+  async addMember(
+    tenantId: string,
+    email: string,
+    role: "admin" | "member" = "admin",
+  ): Promise<void> {
+    await this.control.query(
+      `INSERT INTO workspace_members (tenant_id, email, role) VALUES ($1, lower($2), $3)
+       ON CONFLICT (tenant_id, email) DO UPDATE SET role = EXCLUDED.role`,
+      [tenantId, email, role],
+    );
+  }
+
+  /** The workspaces an email may sign into (email -> tenant, shared backend). */
+  async membershipsFor(
+    email: string,
+  ): Promise<{ tenant_id: string; name: string; role: "admin" | "member" }[]> {
+    const r = await this.control.query<{ tenant_id: string; name: string; role: "admin" | "member" }>(
+      `SELECT m.tenant_id, t.name, m.role
+         FROM workspace_members m JOIN tenants t ON t.tenant_id = m.tenant_id
+        WHERE lower(m.email) = lower($1)
+        ORDER BY m.created_at ASC`,
+      [email],
+    );
+    return r.rows;
+  }
+
+  /**
+   * Self-serve free signup: a VERIFIED email (magic-link or Google) with no
+   * existing workspace gets a fresh SHARED workspace, and is added as its admin.
+   * Verified-email-gated by the caller, so this is not an anonymous
+   * schema-creation surface.
+   */
+  async createSharedWorkspaceForEmail(email: string): Promise<TenantRecord> {
+    const t = await this.createTenant(email.toLowerCase(), { mode: "shared" });
+    await this.addMember(t.tenant_id, email, "admin");
+    return t;
+  }
+
   /** The only way to touch tenant data. */
   async contextFor(tenantId: string): Promise<TenantContext> {
     const rec = await this.getTenant(tenantId);

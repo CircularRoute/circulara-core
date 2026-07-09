@@ -1956,7 +1956,9 @@ test("wave7 ESG export: ranges + confidence + sources on every figure; CSV works
   assert.ok(st.body.includes("Circulara saved you"));
   assert.ok(st.body.includes("fee:"));
   assert.ok(st.body.includes("By user") && st.body.includes("By team") && st.body.includes("By module"));
-  assert.ok(st.body.includes("esg-export"));
+  // builder.20260708.001: statement ESG links now point at the browser-authed
+  // dashboard download routes (cookie/token), not the header-only /v1 API route.
+  assert.ok(st.body.includes("/dashboard/esg.json") && st.body.includes("/dashboard/esg.csv"));
 });
 
 // ---------- wave 8 (billing test mode) ----------

@@ -30,7 +30,7 @@ export interface AuthResult {
   ok: boolean;
   role?: Role;
   subject?: string; // SSO sub or agent seat_id
-  kind?: "oidc" | "agent_token" | "dev";
+  kind?: "oidc" | "agent_token" | "workspace" | "dev";
   /** QA BL1: the tenant this credential is BOUND to. null = unbound, which is
    * acceptable ONLY in dev mode; oidc tokens without a tenant claim are
    * rejected at the tenant boundary (fail closed). */
@@ -39,13 +39,20 @@ export interface AuthResult {
 }
 
 export interface AuthConfig {
-  mode: "oidc" | "dev";
+  // dev     = sprint-1 static tokens (local/tests only).
+  // consumer= free Observe: HS256 workspace-install + named-agent tokens; email/
+  //           Google dashboard login lives in the web-auth layer. No OIDC bearer
+  //           and no dev statics. This is the go-live free-tier mode.
+  // oidc    = enterprise SSO bearer (RESERVED FOR PAID customers).
+  mode: "oidc" | "dev" | "consumer";
   issuer?: string;
   audience?: string;
   adminClaim?: string; // claim name marking admins (default circulara_role)
   tenantClaim?: string; // claim naming the bound tenant (default circulara_tenant)
-  agentTokenSecret: Buffer; // HS256 secret for agent seat tokens
+  agentTokenSecret: Buffer; // HS256 secret for agent seat + workspace tokens
   agentTokenTtlSeconds?: number;
+  /** free-install workspace token lifetime (default 180d). */
+  workspaceTokenTtlSeconds?: number;
   /** test seam: verification key overriding the remote JWKS */
   oidcKeyOverride?: JoseKey;
 }
@@ -78,9 +85,9 @@ export class Authenticator {
         return { ok: true, role: "seat", subject: "dev-seat", kind: "dev", tenant_id: null };
     }
 
-    // agent seat token (HS256, our own mint)
-    const agent = await this.verifyAgentToken(token);
-    if (agent.ok) return agent;
+    // HS256, our own mint: named-agent seat token OR workspace-install token
+    const hs = await this.verifyHsToken(token);
+    if (hs.ok) return hs;
 
     // OIDC (RS256 against org issuer)
     if (this.cfg.mode === "oidc") {
@@ -118,21 +125,44 @@ export class Authenticator {
       .sign(this.cfg.agentTokenSecret);
   }
 
-  private async verifyAgentToken(token: string): Promise<AuthResult> {
+  /**
+   * Mint a per-workspace install token (free Observe). This is the bearer the
+   * plugin/MCP sends as CIRCULARA_TOKEN; it REPLACES the dev static tokens for
+   * real installs. Bound to the workspace tenant (BL1) so the header x-tenant-id
+   * must agree. Long-lived (default 180d) - a workspace admin re-mints from the
+   * dashboard to rotate.
+   */
+  async mintWorkspaceToken(tenantId: string, role: "admin" | "seat" = "admin"): Promise<string> {
+    return new SignJWT({ tenant_id: tenantId, typ: "workspace", role })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject(`workspace:${tenantId}`)
+      .setIssuedAt()
+      .setExpirationTime(
+        Math.floor(Date.now() / 1000) + (this.cfg.workspaceTokenTtlSeconds ?? 180 * 86400),
+      )
+      .sign(this.cfg.agentTokenSecret);
+  }
+
+  /** Verify an HS256 token we minted: named-agent seat OR workspace install. */
+  private async verifyHsToken(token: string): Promise<AuthResult> {
     try {
       const { payload } = await jwtVerify(token, this.cfg.agentTokenSecret, {
         algorithms: ["HS256"],
       });
-      if ((payload as JWTPayload & { typ?: string }).typ !== "agent")
-        return { ok: false };
-      return {
-        ok: true,
-        role: "seat",
-        subject: String(payload.sub),
-        kind: "agent_token",
-        // BL1: the tenant_id claim minted into the token is BINDING
-        tenant_id: String((payload as JWTPayload & { tenant_id?: string }).tenant_id ?? "") || null,
-      };
+      const p = payload as JWTPayload & { typ?: string; tenant_id?: string; role?: string };
+      // BL1: the tenant_id claim minted into the token is BINDING
+      const tenant_id = String(p.tenant_id ?? "") || null;
+      if (p.typ === "agent")
+        return { ok: true, role: "seat", subject: String(payload.sub), kind: "agent_token", tenant_id };
+      if (p.typ === "workspace")
+        return {
+          ok: true,
+          role: p.role === "seat" ? "seat" : "admin",
+          subject: String(payload.sub),
+          kind: "workspace",
+          tenant_id,
+        };
+      return { ok: false };
     } catch {
       return { ok: false };
     }

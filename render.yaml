@@ -16,9 +16,9 @@ services:
     name: circulara-observe-backend
     runtime: node
     plan: starter
-    rootDir: packages/backend
-    buildCommand: npm install
-    startCommand: npm run start   # B6: tsx src/main.ts
+    rootDir: .                              # install at workspace ROOT so npm links
+    buildCommand: npm install               # the @circulara/schema workspace sibling
+    startCommand: npm run start -w @circulara/backend   # (unpublished; would 404 from packages/backend)
     healthCheckPath: /healthz
     autoDeploy: false             # deploy on explicit founder go, not on push
     envVars:
@@ -29,15 +29,25 @@ services:
           name: circulara-observe-db
           property: connectionString
       - key: CIRCULARA_AUTH_MODE
-        value: oidc                # dashboard session auth before public URL
+        value: consumer            # free Observe: email magic-link + Google sign-in
+                                   # (enterprise SSO/oidc is reserved for paid)
+      - key: CIRCULARA_APP_BASE_URL
+        value: https://circulara-observe-backend.onrender.com  # UPDATE to the final
+                                   # public URL before publish (OAuth callback + magic links)
       - key: CIRCULARA_LIVE_CATALOGS
         value: "true"              # live free catalogs (HF/CKAN/RODA)
+      - key: CIRCULARA_EMAIL_FROM
+        value: noreply@circulara.ai  # magic-link sender (verify the domain in Brevo)
       # --- secrets: set in the Render dashboard, sync:false (never in repo) ---
       - key: CIRCULARA_MASTER_KEY          # 32-byte hex KEK (envelope encryption)
         sync: false
-      - key: CIRCULARA_AGENT_TOKEN_SECRET  # HS256 secret for agent-seat tokens
+      - key: CIRCULARA_AGENT_TOKEN_SECRET  # HS256 secret for agent-seat + workspace tokens
         sync: false
-      - key: CIRCULARA_OIDC_ISSUER         # from the chosen IdP
+      - key: CIRCULARA_SESSION_SECRET      # HS256 secret for dashboard session cookies
         sync: false
-      - key: CIRCULARA_OIDC_AUDIENCE
+      - key: GOOGLE_CLIENT_ID              # "Sign in with Google" OAuth client
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: BREVO_API_KEY                 # magic-link transactional email (existing vendor)
         sync: false

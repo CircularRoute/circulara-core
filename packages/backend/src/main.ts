@@ -28,13 +28,20 @@ if (!masterKeyHex || !agentSecret) {
   process.exit(1);
 }
 
-const authMode = (process.env.CIRCULARA_AUTH_MODE ?? "dev") as "dev" | "oidc";
+// dev = static tokens (local/tests); consumer = free Observe (email+Google
+// dashboard login, HS256 workspace/agent tokens); oidc = enterprise SSO (paid).
+const authMode = (process.env.CIRCULARA_AUTH_MODE ?? "dev") as "dev" | "oidc" | "consumer";
 const auth = new Authenticator({
   mode: authMode,
   issuer: process.env.CIRCULARA_OIDC_ISSUER,
   audience: process.env.CIRCULARA_OIDC_AUDIENCE,
   agentTokenSecret: Buffer.from(agentSecret, "utf8"),
+  workspaceTokenTtlSeconds:
+    Number(process.env.CIRCULARA_WORKSPACE_TOKEN_TTL_DAYS ?? 180) * 86400,
 });
+
+// B3: production binds 0.0.0.0:$PORT; also decides Secure cookies below.
+const isProd = process.env.NODE_ENV === "production" || !!process.env.DATABASE_URL;
 
 const registry = new PricingRegistry(
   process.env.CIRCULARA_REGISTRY_DIR ?? "./registry-data",
@@ -61,8 +68,37 @@ if (process.env.CIRCULARA_LIVE_CATALOGS === "true") {
   catalogs = launchCatalogs();
 }
 const index = new FederatedIndex(catalogs);
+
+// builder.20260708.001: consumer dashboard login (email magic-link + Google).
+// Only wired in consumer mode; enterprise SSO (oidc) is a paid concern.
+let web: import("./auth/webauth.js").WebAuthDeps | undefined;
+if (authMode === "consumer") {
+  const sessionSecret = loadSecret(cfg, "CIRCULARA_SESSION_SECRET") ?? agentSecret;
+  const baseUrl = process.env.CIRCULARA_APP_BASE_URL ?? `http://127.0.0.1:${cfg.port}`;
+  const gid = loadSecret(cfg, "GOOGLE_CLIENT_ID");
+  const gsecret = loadSecret(cfg, "GOOGLE_CLIENT_SECRET");
+  const brevo = loadSecret(cfg, "BREVO_API_KEY");
+  web = {
+    mode: "consumer",
+    baseUrl,
+    sessionSecret: Buffer.from(sessionSecret, "utf8"),
+    sessionTtlSeconds: Number(process.env.CIRCULARA_SESSION_TTL_SECONDS ?? 7 * 86400),
+    secureCookies: baseUrl.startsWith("https") || isProd,
+    control,
+    google: gid && gsecret ? { clientId: gid, clientSecret: gsecret } : undefined,
+    email: brevo
+      ? {
+          brevoApiKey: brevo,
+          fromEmail: process.env.CIRCULARA_EMAIL_FROM ?? "noreply@circulara.ai",
+          fromName: process.env.CIRCULARA_EMAIL_FROM_NAME ?? "Circulara",
+        }
+      : undefined,
+  };
+}
+
 const app = buildApp({
   control,
+  web,
   objects: new FsObjectStore(join(cfg.dataDir, "objects")),
   auth,
   gateway: {
@@ -80,7 +116,6 @@ const app = buildApp({
   },
 });
 // B3: Render routes to 0.0.0.0:$PORT; bind 0.0.0.0 in production, localhost in dev.
-const isProd = process.env.NODE_ENV === "production" || !!process.env.DATABASE_URL;
 const host = process.env.CIRCULARA_HOST ?? (isProd ? "0.0.0.0" : "127.0.0.1");
 await app.listen({ port: cfg.port, host });
 console.log(

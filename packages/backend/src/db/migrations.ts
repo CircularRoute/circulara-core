@@ -191,4 +191,21 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan_mode text NOT NULL DEFAULT 'sh
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS schema text;  -- shared: workspace schema; dedicated: null
 `,
   },
+  {
+    // builder.20260708.001: consumer dashboard login (email magic-link + Google).
+    // Maps an authenticated human email -> the workspace(s) it may sign into.
+    // Control-plane level (a global email->tenant lookup for the shared backend);
+    // per-workspace seats stay in the tenant schema. Enterprise SSO = paid only.
+    version: 3,
+    sql: `
+CREATE TABLE IF NOT EXISTS workspace_members (
+  tenant_id  uuid NOT NULL REFERENCES tenants(tenant_id),
+  email      text NOT NULL,
+  role       text NOT NULL DEFAULT 'admin' CHECK (role IN ('admin','member')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, email)
+);
+CREATE INDEX IF NOT EXISTS workspace_members_email ON workspace_members (lower(email));
+`,
+  },
 ];
