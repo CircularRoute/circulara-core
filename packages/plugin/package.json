@@ -21,7 +21,7 @@
     "url": "https://github.com/CircularRoute/circulara-core.git",
     "directory": "packages/plugin"
   },
-  "mcpName": "io.github.CircularRoute/plugin",
+  "mcpName": "ai.circulara/plugin",
   "type": "module",
   "bin": {
     "circulara-mcp": "dist/server.js",
