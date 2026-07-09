@@ -882,7 +882,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const month = (req.query as { month?: string }).month;
     const r = await meterReport(g.ctx, month);
     const p = savingsPotential(r.observed_usd);
-    return reply.type("text/html").send(renderDashboard(r, p, g.mkQ(month), g.account));
+    return reply.type("text/html").send(renderDashboard(r, p, g.mkQ(month), g.account, g.email));
   });
 
   app.get("/dashboard/meter", async (req, reply) => {
@@ -1023,6 +1023,58 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       ...o,
       note: "Set these in your plugin env. Treat CIRCULARA_TOKEN like a password; re-mint here to rotate.",
     };
+  });
+
+  // "Let's talk" contact form from the dashboard upgrade flow. Emails the team
+  // via Brevo (same verified sender as the marketing site). Signed-in only.
+  app.post("/v1/contact", async (req, reply) => {
+    if (deps.web) {
+      const s = await sessionFromRequest(deps.web, req);
+      if (!s) return reply.status(401).send({ error: "sign in first" });
+    }
+    const b = (req.body ?? {}) as {
+      firstName?: string; lastName?: string; email?: string; phone?: string; message?: string;
+    };
+    const firstName = (b.firstName ?? "").trim();
+    const lastName = (b.lastName ?? "").trim();
+    const email = (b.email ?? "").trim();
+    const phone = (b.phone ?? "").trim();
+    const message = (b.message ?? "").trim();
+    if (!firstName || !message || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return reply.status(400).send({ error: "name, a valid email, and a message are required" });
+    const key = deps.web?.email?.brevoApiKey;
+    if (!key) return reply.status(503).send({ error: "contact is not configured" });
+    const name = `${firstName} ${lastName}`.trim();
+    const esc2 = (s: string) =>
+      s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+    const rows: [string, string][] = [
+      ["Name", name], ["Email", email], ["Phone", phone], ["Message", message],
+    ];
+    const rowsHtml = rows
+      .filter(([, v]) => v)
+      .map(
+        ([k, v]) =>
+          `<tr><td style="padding:4px 14px 4px 0;color:#42566B;vertical-align:top"><strong>${esc2(k)}</strong></td><td style="padding:4px 0;color:#0A2540">${esc2(v).replace(/\n/g, "<br>")}</td></tr>`,
+      )
+      .join("");
+    const html = `<div style="font-family:Inter,Arial,sans-serif;color:#0A2540;max-width:560px"><h2 style="color:#0072B5;margin:0 0 14px;font-size:18px">New Observer upgrade enquiry</h2><table style="border-collapse:collapse;font-size:14px">${rowsHtml}</table><p style="margin-top:22px;color:#8497A9;font-size:12px">Submitted from the Circulara Observer dashboard.</p></div>`;
+    try {
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: { "api-key": key, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          sender: { name: "Circulara Observer", email: "hello@circularroute.com" },
+          to: [{ email: "hello@circularroute.com" }],
+          replyTo: { email, name },
+          subject: `[Circulara] Observer upgrade: ${name}`,
+          htmlContent: html,
+        }),
+      });
+      if (!res.ok) return reply.status(502).send({ error: "could not send your message" });
+    } catch {
+      return reply.status(502).send({ error: "could not send your message" });
+    }
+    return { ok: true };
   });
 
   // The onboarding PAGE: install command + copy-paste env block + hook snippet.

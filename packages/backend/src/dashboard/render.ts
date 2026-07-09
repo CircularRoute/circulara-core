@@ -84,15 +84,27 @@ nav.tabs .tab-locked:hover::after,nav.tabs .tab-locked:focus::after{opacity:1;vi
 .backlink{display:inline-block;margin-bottom:16px;color:var(--blue-deep);font-size:14px;font-weight:600;text-decoration:none}
 .upsell{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;background:linear-gradient(135deg,var(--band),#0b3157);color:#fff;border-radius:var(--r-lg);padding:22px 26px;margin:8px 0 28px}
 .upsell-text{font-size:17px;font-weight:700;letter-spacing:-.01em}
-.upsell .btn.primary{background:#fff;color:var(--band)}
-.upsell .btn.primary:hover{background:#e6edf3}
+.upsell .btn.primary{background:var(--green);color:#fff}
+.upsell .btn.primary:hover{background:var(--green-deep)}
 .modal-ov{position:fixed;inset:0;background:rgba(10,37,64,.55);display:flex;align-items:center;justify-content:center;padding:24px;z-index:100}
 .modal-ov[hidden]{display:none}
 .modal{background:var(--surface);border-radius:var(--r-lg);box-shadow:0 24px 64px -20px rgba(10,37,64,.5);padding:32px;max-width:440px;width:100%;position:relative}
 .modal-x{position:absolute;top:10px;right:14px;background:none;border:0;font-size:26px;line-height:1;color:var(--ink-3);cursor:pointer}
 .modal-x:hover{color:var(--ink)}
+.modal.wide{max-width:520px}
 .modal-h{font-size:22px;font-weight:800;letter-spacing:-.01em;margin-bottom:10px}
 .modal-p{color:var(--ink-2);font-size:15px;line-height:1.55;margin-bottom:22px}
+.modal-eyebrow{font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--blue-deep);margin-bottom:6px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.fld{display:flex;flex-direction:column;gap:6px;font-size:13.5px}
+.fld.full{grid-column:1 / -1}
+.fld>span{font-weight:600;color:var(--ink)}
+.fld input,.fld textarea{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:14px var(--font-ui);color:var(--ink);background:#fff;width:100%}
+.fld textarea{resize:vertical}
+.fld input:focus,.fld textarea:focus{outline:2px solid var(--focus);border-color:var(--blue)}
+.form-err{color:#B42318;font-size:13px;margin-top:12px}
+.done-check{width:48px;height:48px;border-radius:50%;background:rgba(22,179,100,.15);color:var(--green-deep);font-weight:700;font-size:22px;display:flex;align-items:center;justify-content:center;margin:0 auto}
+@media(max-width:520px){.form-grid{grid-template-columns:1fr}}
 .banner{background:var(--blue-wash);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px;color:var(--blue-deep);font-size:14px;font-weight:600;margin-bottom:24px}
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:24px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:24px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
@@ -182,6 +194,7 @@ export function renderDashboard(
   p: SavingsPotential,
   tenantQ: string,
   account = "",
+  email = "",
 ): string {
   // Observe breakdowns: by model / provider / month (no by-user/team - Observe
   // has no team structure). Avoided is always $0 on free Observe, so it is omitted.
@@ -249,17 +262,56 @@ ${bd("By month", "Month", r.by_month)}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="upTitle">
     <button class="modal-x" type="button" onclick="ciraCloseUpgrade()" aria-label="Close">&times;</button>
     <h2 class="modal-h" id="upTitle">Ready to start saving?</h2>
-    <p class="modal-p">Upgrading switches on Circulara's optimization engines, so the savings you see here become real. To get started, reach out through the contact form on our site and we'll set your paid workspace up.</p>
-    <a class="btn primary" href="https://circulara.ai" target="_blank" rel="noopener">Contact Circulara AI</a>
+    <p class="modal-p">Upgrading switches on Circulara's optimization engines, so the savings you see here become real. Tell us a bit about your setup and we'll get you started.</p>
+    <button class="btn primary" type="button" onclick="ciraContact()">Contact Circulara AI</button>
+  </div>
+</div>
+<div class="modal-ov" id="contactModal" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="ctTitle">
+    <button class="modal-x" type="button" onclick="ciraCloseContact()" aria-label="Close">&times;</button>
+    <div id="contactForm">
+      <p class="modal-eyebrow">Contact us</p>
+      <h2 class="modal-h" id="ctTitle">Let's talk.</h2>
+      <p class="modal-p" style="margin-bottom:18px">Tell us about your AI fleet and we'll set up your paid workspace. We usually reply within one business day.</p>
+      <form onsubmit="return ciraSubmitContact(event)">
+        <div class="form-grid">
+          <label class="fld"><span>First name *</span><input name="firstName" autocomplete="given-name" required></label>
+          <label class="fld"><span>Last name</span><input name="lastName" autocomplete="family-name"></label>
+          <label class="fld"><span>Email *</span><input name="email" type="email" autocomplete="email" value="${esc(email)}" required></label>
+          <label class="fld"><span>Phone</span><input name="phone" type="tel" autocomplete="tel"></label>
+          <label class="fld full"><span>Your message *</span><textarea name="message" rows="4" required></textarea></label>
+        </div>
+        <p class="form-err" id="ctErr" hidden></p>
+        <button class="btn primary" type="submit" id="ctSubmit" style="width:100%;margin-top:16px">Submit</button>
+      </form>
+    </div>
+    <div id="contactDone" hidden style="text-align:center;padding:12px 0">
+      <div class="done-check">&#10003;</div>
+      <h2 class="modal-h" style="margin-top:14px">Message sent.</h2>
+      <p class="modal-p" style="margin-bottom:0">The Circulara team will get back to you shortly.</p>
+    </div>
   </div>
 </div>
 <script>
 function ciraUpgrade(){var m=document.getElementById('upgradeModal');if(m)m.hidden=false;}
 function ciraCloseUpgrade(){var m=document.getElementById('upgradeModal');if(m)m.hidden=true;}
+function ciraContact(){ciraCloseUpgrade();var m=document.getElementById('contactModal');if(m)m.hidden=false;}
+function ciraCloseContact(){var m=document.getElementById('contactModal');if(m)m.hidden=true;}
+function ciraSubmitContact(e){
+  e.preventDefault();
+  var f=e.target, err=document.getElementById('ctErr'), btn=document.getElementById('ctSubmit');
+  var g=function(n){var el=f.elements[n];return el?el.value.trim():'';};
+  var email=g('email');
+  if(!g('firstName')||!g('message')||!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){err.textContent='Please add your name, a valid email, and a message.';err.hidden=false;return false;}
+  err.hidden=true; btn.disabled=true; btn.textContent='Sending...';
+  fetch('/v1/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({firstName:g('firstName'),lastName:g('lastName'),email:email,phone:g('phone'),message:g('message')})})
+    .then(function(r){if(!r.ok)throw 0;document.getElementById('contactForm').hidden=true;document.getElementById('contactDone').hidden=false;})
+    .catch(function(){err.textContent='Something went wrong. Please try again, or email hello@circularroute.com directly.';err.hidden=false;btn.disabled=false;btn.textContent='Submit';});
+  return false;
+}
 (function(){
-  var ov=document.getElementById('upgradeModal');
-  if(ov)ov.addEventListener('click',function(e){if(e.target===ov)ciraCloseUpgrade();});
-  document.addEventListener('keydown',function(e){if(e.key==='Escape')ciraCloseUpgrade();});
+  ['upgradeModal','contactModal'].forEach(function(id){var ov=document.getElementById(id);if(ov)ov.addEventListener('click',function(e){if(e.target===ov)ov.hidden=true;});});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){ciraCloseUpgrade();ciraCloseContact();}});
   var deferred=null, ib=document.getElementById('installBtn'), hint=document.getElementById('installHint');
   window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();deferred=e;});
   var standalone=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
