@@ -67,8 +67,10 @@ header.top{display:flex;align-items:center;justify-content:space-between;gap:16p
 nav.tabs{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
 nav.tabs a{padding:8px 16px;border-radius:999px;text-decoration:none;font-size:14px;font-weight:600;color:var(--blue-deep);background:var(--blue-wash)}
 nav.tabs a.active{background:var(--blue);color:#fff}
-nav.tabs .tab-locked{padding:8px 14px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink-3);background:var(--surface-2);cursor:not-allowed;display:inline-flex;align-items:center;gap:6px;opacity:.8}
+nav.tabs .tab-locked{position:relative;padding:8px 14px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink-3);background:transparent;border:1px dashed var(--line-strong);cursor:not-allowed;display:inline-flex;align-items:center;gap:6px}
 nav.tabs .tab-locked svg{width:12px;height:12px}
+nav.tabs .tab-locked::after{content:"Upgrade to unlock";position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%) translateY(-4px);background:var(--band);color:#fff;font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;padding:6px 10px;border-radius:8px;white-space:nowrap;opacity:0;visibility:hidden;transition:opacity .15s ease,transform .15s ease;z-index:30;pointer-events:none;box-shadow:0 8px 20px -8px rgba(10,37,64,.4)}
+nav.tabs .tab-locked:hover::after,nav.tabs .tab-locked:focus::after{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
 .obs-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}
 .obs-title{font-size:26px;font-weight:800;letter-spacing:-.02em}
 .obs-sub{color:var(--ink-2);font-size:14.5px;margin-top:4px}
@@ -142,7 +144,7 @@ function page(title: string, tenantQ: string, active: string, body: string, acco
   const tabs =
     `<a href="/dashboard${tenantQ}" class="${active === "dashboard" ? "active" : ""}">Observer Dashboard</a>` +
     ["Meter", "Savings potential", "Monthly statement"]
-      .map((l) => `<span class="tab-locked" title="Available on paid plans">${l} ${LOCK_SVG}</span>`)
+      .map((l) => `<span class="tab-locked" tabindex="0" title="Upgrade to unlock">${l} ${LOCK_SVG}</span>`)
       .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

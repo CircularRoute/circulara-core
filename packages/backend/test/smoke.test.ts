@@ -941,8 +941,8 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
-  // Connect plugin is a button; paid tabs are shown locked
-  assert.ok(html.includes("Connect plugin") && html.includes("Available on paid plans"));
+  // Connect plugin is a button; paid tabs are shown locked with an upgrade hover
+  assert.ok(html.includes("Connect plugin") && html.includes("Upgrade to unlock"));
   assert.ok(html.includes("IBM Plex Mono")); // figures in mono (brand)
   assert.ok(html.includes("#009AE4") && html.includes("#0E8E4E")); // brand tokens present (blue unified to site #009AE4)
 
