@@ -75,7 +75,7 @@ const humanError = (code?: string): string | undefined => {
 
 function loginPage(web: WebAuthDeps, opts: { error?: string; sent?: string; bye?: boolean } = {}): string {
   const googleBtn = web.google
-    ? `<a class="btn google" href="/auth/google/start">Sign in with Google</a><div class="or">or</div>`
+    ? `<a class="btn google" href="/auth/google/start"><svg class="gicon" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>Sign in with Google</a><div class="or">or</div>`
     : "";
   const msg = opts.error
     ? `<div class="msg err">${esc(opts.error)}</div>`
@@ -100,7 +100,9 @@ function loginPage(web: WebAuthDeps, opts: { error?: string; sent?: string; bye?
 --font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--surface-2);color:var(--ink);font:16px/1.55 var(--font);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;-webkit-font-smoothing:antialiased}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px -14px rgba(10,37,64,.18);padding:32px;max-width:400px;width:100%}
+.card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px -14px rgba(10,37,64,.18);padding:32px;max-width:400px;width:100%}
+.close{position:absolute;top:12px;right:14px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:var(--ink-3);font-size:24px;line-height:1;text-decoration:none;transition:background .15s,color .15s}
+.close:hover{background:var(--surface-2);color:var(--ink)}
 .brand{margin-bottom:6px}
 .brand img{height:34px;width:auto;display:block}
 .sub{color:var(--ink-3);font-size:14px;margin-bottom:24px}
@@ -109,7 +111,8 @@ input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:va
 input:focus{outline:2px solid rgba(0,155,232,.45);border-color:var(--blue)}
 .btn{display:block;width:100%;text-align:center;padding:12px 16px;border-radius:var(--r);font-weight:600;font-size:15px;text-decoration:none;cursor:pointer;border:0}
 button.btn{background:var(--blue);color:#fff}
-.btn.google{background:#fff;color:var(--ink);border:1px solid var(--line);margin-bottom:16px}
+.btn.google{background:#fff;color:var(--ink);border:1px solid var(--line);margin-bottom:16px;display:flex;align-items:center;justify-content:center;gap:10px}
+.btn.google .gicon{width:18px;height:18px;flex:0 0 auto}
 .or{text-align:center;color:var(--ink-3);font-size:13px;margin-bottom:16px}
 .msg{padding:12px 14px;border-radius:var(--r);font-size:14px;margin-bottom:16px}
 .msg.ok{background:rgba(22,179,100,.10);color:var(--green-deep)}
@@ -117,6 +120,7 @@ button.btn{background:var(--blue);color:#fff}
 .foot{color:var(--ink-3);font-size:12.5px;margin-top:20px;text-align:center}
 </style></head><body>
 <div class="card">
+  <a class="close" href="https://circulara.ai" aria-label="Close" onclick="try{if(document.referrer&&new URL(document.referrer).hostname==='circulara.ai'){history.back();return false;}}catch(e){}">&times;</a>
   <div class="brand"><img src="/assets/circulara_logo.svg" alt="Circulara AI"></div>
   <div class="sub">Observe (free tier) - sign in to your workspace</div>
   ${msg}
