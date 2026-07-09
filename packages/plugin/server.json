@@ -1,0 +1,63 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.circularroute/plugin",
+  "description": "Circulara Observe MCP plugin - meters your AI agents' token spend and carbon, free tier.",
+  "repository": {
+    "url": "https://github.com/CircularRoute/circulara-core",
+    "source": "github",
+    "subfolder": "packages/plugin"
+  },
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@circulara/plugin",
+      "version": "0.1.1",
+      "runtimeHint": "npx",
+      "runtimeArguments": [
+        { "type": "positional", "value": "-y" },
+        { "type": "positional", "value": "-p" },
+        { "type": "positional", "value": "@circulara/plugin" },
+        { "type": "positional", "value": "circulara-mcp" }
+      ],
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "CIRCULARA_BACKEND_URL",
+          "description": "Your Circulara Observe backend URL - copy from the Connect page after signing in at https://plugin.circulara.ai",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "CIRCULARA_TENANT_ID",
+          "description": "Your workspace ID - from the Connect page",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "CIRCULARA_TOKEN",
+          "description": "Your signed workspace token - from the Connect page (keep secret)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CIRCULARA_SEAT_ID",
+          "description": "Your seat ID - from the Connect page",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "CIRCULARA_USER_ID",
+          "description": "Your email / identity - from the Connect page",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
