@@ -17,7 +17,7 @@ services:
     runtime: node
     plan: starter
     rootDir: .                              # install at workspace ROOT so npm links
-    buildCommand: npm install               # the @circulara/schema workspace sibling
+    buildCommand: npm install --include=dev              # the @circulara/schema workspace sibling
     startCommand: npm run start -w @circulara/backend   # (unpublished; would 404 from packages/backend)
     healthCheckPath: /healthz
     autoDeploy: false             # deploy on explicit founder go, not on push
