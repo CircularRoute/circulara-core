@@ -81,6 +81,8 @@ nav.tabs .tab-locked:hover::after,nav.tabs .tab-locked:focus::after{opacity:1;vi
 .btn.primary:hover{background:var(--blue-deep)}
 .btn.ghost{background:var(--surface);color:var(--blue-deep);border-color:var(--line-strong)}
 .btn.ghost:hover{border-color:var(--blue)}
+.btn.connect{background:var(--navy);color:#fff;box-shadow:0 1px 0 rgba(10,37,64,.06)}
+.btn.connect:hover{background:#0038B0;box-shadow:0 6px 18px -8px rgba(0,40,140,.6)}
 .backlink{display:inline-block;margin-bottom:16px;color:var(--blue-deep);font-size:14px;font-weight:600;text-decoration:none}
 .upsell{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;background:linear-gradient(135deg,var(--green-deep),#15A85C);color:#fff;border-radius:var(--r-lg);padding:22px 26px;margin:8px 0 28px}
 .upsell-text{font-size:17px;font-weight:700;letter-spacing:-.01em}
@@ -223,7 +225,7 @@ ${rows.length
     <p class="obs-sub">Your live AI savings meter - free forever. Connect the plugin and watch it fill in.</p>
   </div>
   <div class="obs-actions">
-    <a class="btn primary" href="/dashboard/connect${tenantQ}">Connect plugin</a>
+    <a class="btn connect" href="/dashboard/connect${tenantQ}">Connect free plugin</a>
     <button class="btn ghost" id="installBtn">Install app</button>
   </div>
 </div>
@@ -251,7 +253,7 @@ ${capBanner(r)}
     ${infoTip("Estimated CO2e you could avoid on a paid tier, from the same optimizations applied to your observed footprint. Carbon is always an estimate (grid + datacenter assumptions disclosed), never a single guaranteed number.")}</div>
 </div>
 <div class="upsell">
-  <div class="upsell-text">Upgrade to start saving with Circulara AI</div>
+  <div class="upsell-text">Upgrade to paid tier and start saving with Circulara AI</div>
   <button class="btn primary" type="button" onclick="ciraUpgrade()">Upgrade</button>
 </div>
 ${bd("By model", "Model", r.by_model)}

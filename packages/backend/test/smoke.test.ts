@@ -937,12 +937,12 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   // breakdowns are by model / provider / month (no by-user/team on Observer)
   assert.ok(html.includes("By model") && html.includes("By provider") && html.includes("By month"));
   // upgrade CTA
-  assert.ok(html.includes("Upgrade to start saving with Circulara AI"));
+  assert.ok(html.includes("Upgrade to paid tier and start saving with Circulara AI"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
-  // Connect plugin is a button; paid tabs are shown locked with an upgrade hover
-  assert.ok(html.includes("Connect plugin") && html.includes("Upgrade to unlock"));
+  // Connect free plugin is a button; paid tabs are shown locked with an upgrade hover
+  assert.ok(html.includes("Connect free plugin") && html.includes("Upgrade to unlock"));
   assert.ok(html.includes("IBM Plex Mono")); // figures in mono (brand)
   assert.ok(html.includes("#009AE4") && html.includes("#0E8E4E")); // brand tokens present (blue unified to site #009AE4)
 
