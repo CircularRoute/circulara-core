@@ -1,6 +1,27 @@
 {
   "name": "@circulara/plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "description": "Circulara Observe MCP plugin - meters your AI agents' token spend and carbon, free tier.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "cursor",
+    "ai-tools",
+    "llm",
+    "token-metering",
+    "llm-cost",
+    "observability",
+    "finops"
+  ],
+  "homepage": "https://circulara.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CircularRoute/circulara-core.git",
+    "directory": "packages/plugin"
+  },
+  "mcpName": "io.github.circularroute/plugin",
   "type": "module",
   "bin": {
     "circulara-mcp": "dist/server.js",
