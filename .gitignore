@@ -4,3 +4,8 @@ data/
 *.log
 .DS_Store
 **/registry-data/candidate*
+# Local dev secrets (Circulara-generated: CIRCULARA_MASTER_KEY, CIRCULARA_AGENT_TOKEN_SECRET).
+# Prod secrets live in Render/Vercel env stores; never commit these. (cto.20260707.003 secrets handling)
+.env
+.env.local
+.env.*.local
