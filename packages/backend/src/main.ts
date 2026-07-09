@@ -87,6 +87,8 @@ if (authMode === "consumer") {
     sessionTtlSeconds: Number(process.env.CIRCULARA_SESSION_TTL_SECONDS ?? 7 * 86400),
     secureCookies: baseUrl.startsWith("https") || isProd,
     control,
+    // heads-up email on each new signup (override with CIRCULARA_SIGNUP_NOTIFY_TO)
+    signupNotifyTo: process.env.CIRCULARA_SIGNUP_NOTIFY_TO ?? "hello@circularroute.com",
     google: gid && gsecret ? { clientId: gid, clientSecret: gsecret } : undefined,
     email: brevo
       ? {

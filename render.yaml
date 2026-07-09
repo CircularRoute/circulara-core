@@ -41,6 +41,8 @@ services:
       - key: CIRCULARA_EMAIL_FROM
         value: hello@circularroute.com  # magic-link sender (Brevo-verified sender,
                                         # same as the marketing site's contact form)
+      - key: CIRCULARA_SIGNUP_NOTIFY_TO
+        value: hello@circularroute.com  # who gets a heads-up email on each new signup
       # --- secrets: set in the Render dashboard, sync:false (never in repo) ---
       - key: CIRCULARA_MASTER_KEY          # 32-byte hex KEK (envelope encryption)
         sync: false

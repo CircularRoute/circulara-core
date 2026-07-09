@@ -68,6 +68,7 @@ before(async () => {
     control,
     google: { clientId: "test-client-id", clientSecret: "test-secret" },
     email: { brevoApiKey: "x", fromEmail: "noreply@circulara.ai", fromName: "Circulara" },
+    signupNotifyTo: "ops@circulara.test",
     sendEmail: async (to, subject, html) => {
       sentEmails.push({ to, subject, html });
     },
@@ -162,6 +163,22 @@ test("invalid email is rejected; bad magic token shows an error, sets no session
   const cb = await app.inject({ method: "GET", url: "/auth/magic/callback?token=garbage" });
   assert.equal(cb.statusCode, 400);
   assert.equal(cookieVal(cb.headers["set-cookie"], "cira_session"), null);
+});
+
+test("a new signup emails the team (heads-up with the new email)", async () => {
+  sentEmails = [];
+  await app.inject({
+    method: "POST", url: "/auth/email/start",
+    payload: { email: "newbie@startup.com" }, headers: { "content-type": "application/json" },
+  });
+  const token = sentEmails[0].html.match(/token=([A-Za-z0-9._-]+)/)![1];
+  await app.inject({ method: "GET", url: `/auth/magic/callback?token=${token}` });
+  const notif = sentEmails.find(
+    (e) => e.to === "ops@circulara.test" && e.subject.includes("New Observer signup"),
+  );
+  assert.ok(notif, "team notification sent");
+  assert.ok(notif!.subject.includes("newbie@startup.com"));
+  assert.ok(notif!.html.includes("newbie@startup.com"));
 });
 
 test("magic link is single-use: a reused link is rejected", async () => {

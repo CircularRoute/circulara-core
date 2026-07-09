@@ -41,6 +41,8 @@ export interface WebAuthDeps {
   control: ControlPlane;
   google?: { clientId: string; clientSecret: string };
   email?: { brevoApiKey: string; fromEmail: string; fromName: string };
+  /** where to email a heads-up when a NEW workspace signs up (Circulara-internal) */
+  signupNotifyTo?: string;
   /** test seam: capture the outbound magic-link email instead of calling Brevo */
   sendEmail?: (to: string, subject: string, html: string) => Promise<void>;
   /** test seam: stub the Google code exchange instead of calling Google */
@@ -221,6 +223,25 @@ export function registerWebAuth(app: FastifyInstance, web: WebAuthDeps): void {
   // (b) single-use: a magic token's id is consumed on first successful callback.
   const usedMagic = new Map<string, number>(); // jti -> expiry (epoch seconds)
 
+  // Heads-up to the team when a NEW workspace signs up. Best-effort, never blocks
+  // (or fails) a signup; sent via Brevo, same verified sender as the rest.
+  const notifySignup = async (email: string, workspace: string): Promise<void> => {
+    const send =
+      web.sendEmail ??
+      (web.email ? (to: string, s: string, h: string) => liveSendEmail(web, to, s, h) : null);
+    const to = web.signupNotifyTo;
+    if (!send || !to) return;
+    const html = `<div style="font-family:Inter,Arial,sans-serif;color:#0A2540">
+  <h2 style="color:#0E8E4E;margin:0 0 12px;font-size:18px">New Observer signup</h2>
+  <table style="font-size:14px;border-collapse:collapse">
+    <tr><td style="padding:3px 14px 3px 0;color:#42566B"><strong>Email</strong></td><td>${esc(email)}</td></tr>
+    <tr><td style="padding:3px 14px 3px 0;color:#42566B"><strong>Workspace</strong></td><td>${esc(workspace)}</td></tr>
+  </table>
+  <p style="margin-top:18px;color:#8497A9;font-size:12px">They just created a free Observer workspace. See all signups at /ops.</p>
+</div>`;
+    await send(to, `New Observer signup: ${email}`, html);
+  };
+
   // Resolve (or self-serve create) the workspace for a VERIFIED email.
   const resolveWorkspace = async (
     email: string,
@@ -231,6 +252,7 @@ export function registerWebAuth(app: FastifyInstance, web: WebAuthDeps): void {
     if (ms.length > 0)
       return { email: lower, tenant_id: ms[0].tenant_id, role: ms[0].role, name };
     const t = await web.control.createSharedWorkspaceForEmail(lower);
+    void notifySignup(lower, t.name).catch(() => {}); // fire-and-forget
     return { email: lower, tenant_id: t.tenant_id, role: "admin", name };
   };
 
