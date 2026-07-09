@@ -84,7 +84,14 @@ function loginPage(web: WebAuthDeps, opts: { error?: string; sent?: string; bye?
         : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in - Circulara AI</title><style>
+<title>Sign in - Circulara AI</title>
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<meta name="theme-color" content="#EEF1F5">
+<link rel="icon" href="/assets/icon-192.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Observer">
+<style>
 @font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url("/assets/inter-latin.woff2") format("woff2")}
 :root{--surface:#fff;--surface-2:#EEF1F5;--line:#E2E8F0;--ink:#0A2540;--ink-2:#42566B;--ink-3:#8497A9;
 --blue:#009AE4;--blue-deep:#0072B5;--green-deep:#0E8E4E;--err:#B42318;--r:12px;

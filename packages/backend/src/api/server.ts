@@ -147,6 +147,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     ".svg": "image/svg+xml",
     ".woff2": "font/woff2",
     ".png": "image/png",
+    ".webmanifest": "application/manifest+json",
   };
   const assetCache = new Map<string, Buffer>();
   app.get("/assets/:file", async (req, reply) => {

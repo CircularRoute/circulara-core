@@ -930,14 +930,15 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const dash = await app.inject({ method: "GET", url: `/dashboard${q}` });
   assert.equal(dash.statusCode, 200);
   const html = dash.body;
-  assert.ok(html.includes("Observed spend"));
+  assert.ok(html.includes("Observer Dashboard")); // one-page free-tier view
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
   // dashboard first row: Potential Savings + Actual Savings cards
   assert.ok(html.includes("Potential Savings") && html.includes("Actual Savings"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
-  assert.ok(html.includes("By user") && html.includes("By team") && html.includes("By month"));
+  // Connect plugin is a button; paid tabs are shown locked
+  assert.ok(html.includes("Connect plugin") && html.includes("Available on paid plans"));
   assert.ok(html.includes("IBM Plex Mono")); // figures in mono (brand)
   assert.ok(html.includes("#009AE4") && html.includes("#0E8E4E")); // brand tokens present (blue unified to site #009AE4)
 

@@ -69,6 +69,19 @@ header.top{display:flex;align-items:center;justify-content:space-between;gap:16p
 nav.tabs{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
 nav.tabs a{padding:8px 16px;border-radius:999px;text-decoration:none;font-size:14px;font-weight:600;color:var(--blue-deep);background:var(--blue-wash)}
 nav.tabs a.active{background:var(--blue);color:#fff}
+nav.tabs .tab-locked{padding:8px 14px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink-3);background:var(--surface-2);cursor:not-allowed;display:inline-flex;align-items:center;gap:6px;opacity:.8}
+nav.tabs .tab-locked svg{width:12px;height:12px}
+.obs-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+.obs-title{font-size:26px;font-weight:800;letter-spacing:-.02em}
+.obs-sub{color:var(--ink-2);font-size:14.5px;margin-top:4px}
+.obs-actions{display:flex;gap:10px;flex-wrap:wrap}
+.obs-hint{color:var(--ink-2);font-size:13.5px;margin-top:20px;background:var(--blue-wash);padding:12px 16px;border-radius:var(--r-md)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 20px;border-radius:10px;font:600 14.5px var(--font-ui);text-decoration:none;cursor:pointer;border:1px solid transparent;transition:background .15s ease,border-color .15s ease}
+.btn.primary{background:var(--blue);color:#fff}
+.btn.primary:hover{background:var(--blue-deep)}
+.btn.ghost{background:var(--surface);color:var(--blue-deep);border-color:var(--line-strong)}
+.btn.ghost:hover{border-color:var(--blue)}
+.backlink{display:inline-block;margin-bottom:16px;color:var(--blue-deep);font-size:14px;font-weight:600;text-decoration:none}
 .banner{background:var(--blue-wash);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px;color:var(--blue-deep);font-size:14px;font-weight:600;margin-bottom:24px}
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:24px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:24px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
@@ -110,22 +123,29 @@ footer.band .fig{color:#fff}
 @media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.savedstat .fig{font-size:26px}.card{padding:16px}th,td{padding:8px 10px}.brand img.logo{height:26px}nav.tabs{gap:6px}nav.tabs a{padding:7px 12px;font-size:13px}}
 `;
 
+// Free-tier Observer nav: only the Observer Dashboard is live; the richer views
+// (Meter, Savings potential, Monthly statement) are shown LOCKED - visible so the
+// user knows they exist, disabled until they upgrade. Connect plugin is a button
+// on the dashboard, not a tab.
+const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+
 function page(title: string, tenantQ: string, active: string, body: string, account = ""): string {
-  const tabs = [
-    ["dashboard", "Dashboard", `/dashboard${tenantQ}`],
-    ["meter", "Meter", `/dashboard/meter${tenantQ}`],
-    ["potential", "Savings potential", `/dashboard/potential${tenantQ}`],
-    ["statement", "Monthly statement", `/dashboard/statement${tenantQ}`],
-    ["connect", "Connect plugin", `/dashboard/connect${tenantQ}`],
-  ]
-    .map(
-      ([k, label, href]) =>
-        `<a href="${href}" class="${k === active ? "active" : ""}">${label}</a>`,
-    )
-    .join("");
+  const tabs =
+    `<a href="/dashboard${tenantQ}" class="${active === "dashboard" ? "active" : ""}">Observer Dashboard</a>` +
+    ["Meter", "Savings potential", "Monthly statement"]
+      .map((l) => `<span class="tab-locked" title="Available on paid plans">${l} ${LOCK_SVG}</span>`)
+      .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} - Circulara AI</title><style>${CSS}</style></head>
+<title>${esc(title)} - Circulara AI</title>
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<meta name="theme-color" content="#EEF1F5">
+<link rel="icon" href="/assets/icon-192.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Observer">
+<style>${CSS}</style></head>
 <body><div class="wrap">
 <header class="top">
   <a class="brand" href="/dashboard${tenantQ}"><img class="logo" src="/assets/circulara_logo.svg" alt="Circulara AI"></a>
@@ -152,18 +172,17 @@ export function renderDashboard(
   tenantQ: string,
   account = "",
 ): string {
-  const sliceTable = (title: string, rows: MeterReport["by_user"]) => `
-<h2 class="section">${title}</h2>
-<div class="tablewrap"><table><thead><tr><th>Key</th><th class="n">Events</th><th class="n">Tokens</th><th class="n">Observed spend</th><th class="n">Avoided</th></tr></thead><tbody>
-${rows
-  .map(
-    (s) =>
-      `<tr><td>${esc(s.key)}</td><td class="n">${num(s.events)}</td><td class="n">${num(s.tokens)}</td><td class="n">${usd(s.observed_usd)}</td><td class="n" style="color:var(--green-deep)">${usd(s.avoided_usd)}</td></tr>`,
-  )
-  .join("")}
-</tbody></table></div>`;
-
   const body = `
+<div class="obs-head">
+  <div>
+    <h1 class="obs-title">Observer Dashboard</h1>
+    <p class="obs-sub">Your live AI savings meter - free forever. Connect the plugin and watch it fill in.</p>
+  </div>
+  <div class="obs-actions">
+    <a class="btn primary" href="/dashboard/connect${tenantQ}">Connect plugin</a>
+    <button class="btn ghost" id="installBtn">Install app</button>
+  </div>
+</div>
 ${capBanner(r)}
 <div class="grid">
   <div class="card"><div class="label navy">Tokens</div>
@@ -189,12 +208,23 @@ ${capBanner(r)}
     <div class="fig green">${co2One(r.avoided_impact.co2e_g.median)}</div>
     <div class="conf">${esc(r.avoided_impact.co2e_g.confidence)}</div></div>
 </div>
-${sliceTable("By user", r.by_user)}
-${sliceTable("By team", r.by_team)}
-${sliceTable("By module", r.by_module)}
-${sliceTable("By month", r.by_month)}
+<p class="obs-hint" id="installHint" hidden>Install Observer for one-tap access to your savings: on iPhone/iPad tap the Share button, then "Add to Home Screen". On desktop Chrome or Edge, use the install icon in the address bar.</p>
+<script>
+(function(){
+  var deferred=null, ib=document.getElementById('installBtn'), hint=document.getElementById('installHint');
+  window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();deferred=e;});
+  var standalone=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+  if(standalone&&ib){ib.style.display='none';return;} // already installed
+  if(ib)ib.addEventListener('click',function(){
+    if(deferred){deferred.prompt();deferred.userChoice.then(function(){deferred=null;});}
+    else if(hint){hint.hidden=false;hint.scrollIntoView({behavior:'smooth',block:'nearest'});}
+  });
+  var isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  if(isIOS&&hint)hint.hidden=false;
+})();
+</script>
 `;
-  return page("Observe dashboard", tenantQ, "dashboard", body, account);
+  return page("Observer Dashboard", tenantQ, "dashboard", body, account);
 }
 
 export function renderPotential(
@@ -357,6 +387,7 @@ details.adv[open]>summary::before{content:"- "}
 .donenote{margin-left:44px;color:var(--ink-2);font-size:14.5px}
 @media(max-width:640px){.stepnote,.cbx,details.adv,.donenote{margin-left:0}}
 </style>
+<a class="backlink" href="/dashboard${tenantQ}">&larr; Observer Dashboard</a>
 <div class="banner">You're signed in to this workspace. Copy the one command below, paste it in your terminal, and you're done - your keys are already baked in. Metering never blocks or changes your calls.</div>
 
 <div class="step"><span class="n">1</span><span class="t">Add Circulara - one command</span></div>
