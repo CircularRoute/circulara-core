@@ -165,6 +165,19 @@ test("invalid email is rejected; bad magic token shows an error, sets no session
   assert.equal(cookieVal(cb.headers["set-cookie"], "cira_session"), null);
 });
 
+test("native urlencoded login form is accepted (not 415) and sends a magic link", async () => {
+  sentEmails = [];
+  const res = await app.inject({
+    method: "POST",
+    url: "/auth/email/start",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    payload: "email=formuser%40co.com", // what a real browser <form> submit sends
+  });
+  assert.notEqual(res.statusCode, 415); // the launch bug
+  assert.equal(res.statusCode, 200);
+  assert.ok(sentEmails.some((e) => e.to === "formuser@co.com")); // magic-link path ran
+});
+
 test("a new signup emails the team (heads-up with the new email)", async () => {
   sentEmails = [];
   await app.inject({

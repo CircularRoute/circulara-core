@@ -70,6 +70,22 @@ export interface AppDeps {
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  // Parse native HTML form posts (application/x-www-form-urlencoded). Fastify only
+  // registers JSON + text parsers by default, so the /login email form (a native
+  // <form> with no enctype) was rejected with 415 before its handler ran. Kept
+  // dependency-free with URLSearchParams, consistent with the hand-rolled cookies.
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      try {
+        done(null, Object.fromEntries(new URLSearchParams(body as string)));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   const auth = async (req: FastifyRequest): Promise<Role> => {
     const res = await deps.auth.verify(req.headers.authorization);
     if (!res.ok)
