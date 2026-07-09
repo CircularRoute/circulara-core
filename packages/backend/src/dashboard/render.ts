@@ -523,3 +523,91 @@ function ciraCopy(id, btn){
 `;
   return page("Connect plugin", tenantQ, "connect", body, account);
 }
+
+// ---- Operator console (internal; behind CIRCULARA_OPS_TOKEN) ----------------
+
+export interface OpsRow {
+  tenant_id: string;
+  name: string;
+  plan_mode: string;
+  created_at: string;
+  members: { email: string; role: string; created_at: string }[];
+  usage: { events: number; tokens: number; observed_usd: number; last: string | null };
+}
+
+const opsDate = (d: string | null): string =>
+  d ? String(d).replace("T", " ").slice(0, 16) + " UTC" : "-";
+
+/** Circulara-internal view of every workspace + who signed up + their usage. */
+export function renderOps(rows: OpsRow[]): string {
+  const totals = rows.reduce(
+    (a, r) => ({
+      ws: a.ws + 1,
+      members: a.members + r.members.length,
+      events: a.events + r.usage.events,
+      tokens: a.tokens + r.usage.tokens,
+      usd: a.usd + r.usage.observed_usd,
+    }),
+    { ws: 0, members: 0, events: 0, tokens: 0, usd: 0 },
+  );
+  const tile = (label: string, value: string) =>
+    `<div class="t"><div class="tl">${label}</div><div class="tv">${value}</div></div>`;
+  const body = rows
+    .map((r) => {
+      const admin = r.members.find((m) => m.role === "admin") ?? r.members[0];
+      const emails = admin
+        ? `${esc(admin.email)}${r.members.length > 1 ? ` <span class="mut">+${r.members.length - 1}</span>` : ""}`
+        : `<span class="mut">(no member)</span>`;
+      return `<tr>
+  <td>${emails}</td>
+  <td>${esc(r.name)}</td>
+  <td><span class="plan ${r.plan_mode}">${esc(r.plan_mode)}</span></td>
+  <td class="nowrap">${opsDate(r.created_at)}</td>
+  <td class="n">${num(r.usage.events)}</td>
+  <td class="n">${num(r.usage.tokens)}</td>
+  <td class="n">${usd(r.usage.observed_usd)}</td>
+  <td class="nowrap">${opsDate(r.usage.last)}</td>
+</tr>`;
+    })
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Operator - Circulara AI</title>
+<style>
+:root{--ink:#0A2540;--ink-2:#42566B;--ink-3:#8497A9;--line:#E2E8F0;--surface:#fff;--surface-2:#EEF1F5;--blue:#009AE4;--green-deep:#0E8E4E;--navy:#00288C}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--surface-2);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:32px 24px 80px}
+.wrap{max-width:1200px;margin:0 auto}
+h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
+.sub{color:var(--ink-3);font-size:14px;margin:4px 0 24px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:28px}
+.t{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.tl{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+.tv{font-size:26px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--line);white-space:normal}
+th{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);background:var(--surface-2)}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+td.nowrap{white-space:nowrap;color:var(--ink-2)}
+tr:last-child td{border-bottom:none}
+.mut{color:var(--ink-3)}
+.plan{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;text-transform:capitalize}
+.plan.shared{background:rgba(0,154,228,.12);color:#0072B5}
+.plan.dedicated{background:rgba(14,142,78,.14);color:var(--green-deep)}
+.empty{padding:40px;text-align:center;color:var(--ink-3)}
+</style></head><body><div class="wrap">
+<h1>Circulara - Operator console</h1>
+<div class="sub">Every workspace, who signed up, and their observed usage. Internal only.</div>
+<div class="tiles">
+  ${tile("Workspaces", num(totals.ws))}
+  ${tile("Members", num(totals.members))}
+  ${tile("Calls observed", num(totals.events))}
+  ${tile("Tokens observed", num(totals.tokens))}
+  ${tile("Observed spend", usd(totals.usd))}
+</div>
+<div class="tablewrap"><table>
+<thead><tr><th>Email</th><th>Workspace</th><th>Plan</th><th>Signed up</th><th class="n">Calls</th><th class="n">Tokens</th><th class="n">Spend</th><th>Last active</th></tr></thead>
+<tbody>${body || `<tr><td colspan="8" class="empty">No signups yet.</td></tr>`}</tbody>
+</table></div>
+</div></body></html>`;
+}

@@ -54,3 +54,5 @@ services:
         sync: false
       - key: BREVO_API_KEY                 # magic-link transactional email (existing vendor)
         sync: false
+      - key: CIRCULARA_OPS_TOKEN           # operator console /ops?key=... (Circulara-internal)
+        sync: false

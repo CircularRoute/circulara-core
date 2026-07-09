@@ -2785,3 +2785,26 @@ test("013 shared mode: workspaces isolated within ONE instance; paid = dedicated
   const paidN = await ctxPaid.db.query<{ n: number }>(`SELECT count(*)::int n FROM seats`);
   assert.equal(paidN.rows[0].n, 1); // its own DB, independent of the shared workspaces
 });
+
+test("operator console: token-gated; lists workspaces + usage as JSON and HTML", async () => {
+  const prev = process.env.CIRCULARA_OPS_TOKEN;
+  process.env.CIRCULARA_OPS_TOKEN = "ops-secret";
+  try {
+    // wrong / missing key -> 401
+    assert.equal((await app.inject({ method: "GET", url: "/ops" })).statusCode, 401);
+    assert.equal((await app.inject({ method: "GET", url: "/ops?key=nope" })).statusCode, 401);
+    // JSON: lists every workspace created across this suite
+    const j = await app.inject({ method: "GET", url: "/ops?key=ops-secret&format=json" });
+    assert.equal(j.statusCode, 200);
+    const body = j.json() as { signups: { tenant_id: string; usage: { events: number } }[] };
+    assert.ok(Array.isArray(body.signups) && body.signups.length > 0);
+    assert.ok(body.signups.every((s) => typeof s.usage.events === "number"));
+    // HTML view renders the operator console
+    const html = await app.inject({ method: "GET", url: "/ops?key=ops-secret" });
+    assert.equal(html.statusCode, 200);
+    assert.ok(html.body.includes("Operator console") && html.body.includes("Workspaces"));
+  } finally {
+    if (prev === undefined) delete process.env.CIRCULARA_OPS_TOKEN;
+    else process.env.CIRCULARA_OPS_TOKEN = prev;
+  }
+});

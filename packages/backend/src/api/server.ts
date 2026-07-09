@@ -26,6 +26,8 @@ import {
   renderStatement,
   renderObserverMeter,
   renderConnect,
+  renderOps,
+  type OpsRow,
 } from "../dashboard/render.js";
 import { normalizeAndAppend } from "../pipeline/normalize.js";
 import { interventionEventSchema } from "@circulara/schema";
@@ -168,6 +170,63 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       .type(type)
       .header("cache-control", "public, max-age=31536000, immutable")
       .send(buf);
+  });
+
+  // ---- Operator console (Circulara-internal): every signup + its usage. ----
+  // Protected by CIRCULARA_OPS_TOKEN (?key= or Bearer). Not the consumer session.
+  app.get("/ops", async (req, reply) => {
+    const opsToken = process.env.CIRCULARA_OPS_TOKEN;
+    if (!opsToken)
+      return reply.status(503).send({ error: "operator console not configured (set CIRCULARA_OPS_TOKEN)" });
+    const q = req.query as { key?: string; format?: string };
+    const provided =
+      q.key ??
+      (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : undefined);
+    if (provided !== opsToken) return reply.status(401).send({ error: "unauthorized" });
+
+    const cdb = deps.control.controlDb();
+    const ws = await cdb.query<{ tenant_id: string; name: string; plan_mode: string; created_at: string }>(
+      `SELECT tenant_id, name, plan_mode, created_at::text FROM tenants ORDER BY created_at DESC`,
+    );
+    const mem = await cdb.query<{ tenant_id: string; email: string; role: string; created_at: string }>(
+      `SELECT tenant_id, email, role, created_at::text FROM workspace_members ORDER BY created_at ASC`,
+    );
+    const byTenant = new Map<string, { email: string; role: string; created_at: string }[]>();
+    for (const m of mem.rows) {
+      const a = byTenant.get(m.tenant_id) ?? [];
+      a.push({ email: m.email, role: m.role, created_at: m.created_at });
+      byTenant.set(m.tenant_id, a);
+    }
+    const rows: OpsRow[] = [];
+    for (const w of ws.rows) {
+      let usage = { events: 0, tokens: 0, observed_usd: 0, last: null as string | null };
+      try {
+        const ctx = await deps.control.contextFor(w.tenant_id);
+        const u = await ctx.db.query<{ events: number; tokens: string; usd: string; last: string | null }>(
+          `SELECT count(*)::int AS events,
+                  coalesce(sum((payload->'tokens'->>'input_actual')::bigint
+                             + (payload->'tokens'->>'output_actual')::bigint),0)::text AS tokens,
+                  coalesce(sum(actual_usd),0)::text AS usd,
+                  max(ts)::text AS last
+             FROM meter_events`,
+        );
+        const r = u.rows[0];
+        usage = { events: r.events, tokens: Number(r.tokens), observed_usd: Number(r.usd), last: r.last };
+      } catch {
+        // workspace not readable (provisioning edge) - show zeros
+      }
+      rows.push({
+        tenant_id: w.tenant_id,
+        name: w.name,
+        plan_mode: w.plan_mode,
+        created_at: w.created_at,
+        members: byTenant.get(w.tenant_id) ?? [],
+        usage,
+      });
+    }
+    if (q.format === "json" || (req.headers.accept ?? "").includes("application/json"))
+      return reply.send({ signups: rows });
+    return reply.type("text/html").send(renderOps(rows));
   });
 
   // ---- control plane (admin) ----
