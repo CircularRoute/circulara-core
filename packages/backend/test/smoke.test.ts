@@ -932,13 +932,14 @@ test("WS5 dashboard/potential/statement render with brand + compliance rules", a
   const html = dash.body;
   assert.ok(html.includes("Observed spend"));
   assert.ok(html.includes("over the free Observe seat limit")); // m4 banner
-  assert.ok(html.includes("never counted as savings")); // AD12 external line (dashboard card)
+  // dashboard first row: Avoidable cost (potential) + Cost avoided (actual) cards
+  assert.ok(html.includes("Avoidable cost") && html.includes("Cost avoided"));
   assert.ok(html.includes("kWh")); // energy range
   assert.ok(html.includes("CO2e")); // carbon range
   assert.ok(html.includes("Estimated")); // confidence label
   assert.ok(html.includes("By user") && html.includes("By team") && html.includes("By month"));
   assert.ok(html.includes("IBM Plex Mono")); // figures in mono (brand)
-  assert.ok(html.includes("#009BE8") && html.includes("#0E8E4E")); // brand tokens present
+  assert.ok(html.includes("#009AE4") && html.includes("#0E8E4E")); // brand tokens present (blue unified to site #009AE4)
 
   const pot = await app.inject({ method: "GET", url: `/dashboard/potential${q}` });
   assert.equal(pot.statusCode, 200);

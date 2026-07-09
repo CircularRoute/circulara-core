@@ -25,6 +25,10 @@ const usd = (n: number) =>
 const num = (n: number) => n.toLocaleString("en-US");
 const pct = (f: number) => `${Math.round(f * 100)}%`;
 
+/** A hover/focus info affordance with an explainer tooltip (CSS-driven). */
+const infoTip = (text: string) =>
+  `<span class="info" tabindex="0" role="button" aria-label="More information">i</span><div class="tip">${esc(text)}</div>`;
+
 function co2Range(r: { low: number; median: number; high: number }): string {
   const g = (x: number) =>
     x >= 1_000_000
@@ -39,33 +43,48 @@ function kwhRange(r: { low: number; high: number }): string {
   return `${f(r.low)} - ${f(r.high)} kWh`;
 }
 
-/** Ledger Light tokens, from the brand spec. Never hardcode values elsewhere. */
+/** Ledger Light tokens, unified with the circulara.ai marketing site design
+ * system (same Inter + IBM Plex Mono, same palette). Self-hosted fonts served
+ * from /assets so the dashboard reads as the same product as the site. */
 const CSS = `
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url("/assets/inter-latin.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/plexmono-400.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url("/assets/plexmono-500.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/plexmono-600.woff2") format("woff2")}
 :root{
   --surface:#FFFFFF; --surface-subtle:#F6F8FB; --surface-2:#EEF1F5;
   --line:#E2E8F0; --line-strong:#CBD6E2;
   --ink:#0A2540; --ink-2:#42566B; --ink-3:#8497A9;
-  --blue:#009BE8; --blue-deep:#0072B5; --blue-wash:rgba(0,155,232,.10);
+  --blue:#009AE4; --blue-deep:#0072B5; --blue-wash:rgba(0,154,228,.10);
   --green:#16B364; --green-deep:#0E8E4E; --navy:#00288C; --band:#071A2B;
-  --focus:rgba(0,155,232,.45);
+  --focus:rgba(0,154,228,.45);
   --r-sm:8px; --r-md:12px; --r-lg:16px;
   --shadow-card:0 1px 0 rgba(10,37,64,.04),0 8px 24px -14px rgba(10,37,64,.18);
-  --font-ui:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --shadow-hover:0 2px 0 rgba(10,37,64,.04),0 18px 40px -18px rgba(10,37,64,.28);
+  --font-ui:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   --font-fig:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--surface-2);color:var(--ink);font:16px/1.55 var(--font-ui)}
+body{background:var(--surface-2);color:var(--ink);font:16px/1.55 var(--font-ui);-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01"}
 .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 96px}
 header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:22px;letter-spacing:-.01em}
-.brand .mark{width:28px;height:28px;border-radius:50%;background:conic-gradient(var(--green) 0 33%,var(--blue) 33% 66%,var(--navy) 66% 100%)}
+.brand{display:flex;align-items:center}
+.brand img.logo{height:30px;width:auto;display:block}
 .crumb{color:var(--ink-3);font-size:14px}
 nav.tabs{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
 nav.tabs a{padding:8px 16px;border-radius:999px;text-decoration:none;font-size:14px;font-weight:600;color:var(--blue-deep);background:var(--blue-wash)}
 nav.tabs a.active{background:var(--blue);color:#fff}
 .banner{background:var(--blue-wash);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px;color:var(--blue-deep);font-size:14px;font-weight:600;margin-bottom:24px}
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:24px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:24px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:24px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+.card:hover{transform:translateY(-3px);box-shadow:var(--shadow-hover);border-color:var(--line-strong)}
+.card.tipcard{position:relative}
+.info{position:absolute;top:16px;right:16px;width:18px;height:18px;border-radius:50%;border:1.5px solid var(--ink-3);color:var(--ink-3);font:600 11px/1 var(--font-ui);display:flex;align-items:center;justify-content:center;cursor:help;font-style:italic}
+.info:hover,.info:focus{border-color:var(--blue);color:var(--blue);outline:none}
+.tip{position:absolute;top:40px;right:12px;width:250px;max-width:78vw;background:var(--band);color:#E6EDF3;font:400 12.5px/1.5 var(--font-ui);letter-spacing:0;text-transform:none;padding:11px 13px;border-radius:10px;box-shadow:0 12px 32px -10px rgba(10,37,64,.45);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .15s ease,transform .15s ease;z-index:20}
+.tip::after{content:"";position:absolute;top:-6px;right:16px;width:12px;height:12px;background:var(--band);transform:rotate(45deg)}
+.info:hover + .tip,.info:focus + .tip,.tip:hover{opacity:1;visibility:visible;transform:translateY(0)}
+.estpill{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:600;background:var(--blue-wash);color:var(--blue-deep)}
 .label{font-size:12.5px;letter-spacing:.12em;font-weight:600;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
 .fig{font-family:var(--font-fig);font-weight:600;font-variant-numeric:tabular-nums;font-size:30px;line-height:1.1}
 .fig.green{color:var(--green-deep)}
@@ -105,7 +124,7 @@ function page(title: string, tenantQ: string, active: string, body: string, acco
 <title>${esc(title)} - Circulara AI</title><style>${CSS}</style></head>
 <body><div class="wrap">
 <header class="top">
-  <div class="brand"><span class="mark" aria-hidden="true"></span>Circulara AI</div>
+  <a class="brand" href="/dashboard${tenantQ}"><img class="logo" src="/assets/circulara_logo.svg" alt="Circulara AI"></a>
   <div class="crumb">${account || "Observe (free tier)"}</div>
 </header>
 <nav class="tabs">${tabs}</nav>
@@ -123,7 +142,12 @@ const capWatermark = (r: MeterReport) =>
     ? `<div class="watermark">Generated over the free-tier seat limit</div>`
     : "";
 
-export function renderDashboard(r: MeterReport, tenantQ: string, account = ""): string {
+export function renderDashboard(
+  r: MeterReport,
+  p: SavingsPotential,
+  tenantQ: string,
+  account = "",
+): string {
   const sliceTable = (title: string, rows: MeterReport["by_user"]) => `
 <h2 class="section">${title}</h2>
 <table><thead><tr><th>Key</th><th class="n">Events</th><th class="n">Tokens</th><th class="n">Observed spend</th><th class="n">Avoided</th></tr></thead><tbody>
@@ -144,12 +168,14 @@ ${capBanner(r)}
   <div class="card"><div class="label">Tokens observed</div>
     <div class="fig">${num(r.tokens_observed)}</div>
     <div class="conf blue">Total usage behind that spend</div></div>
-  <div class="card"><div class="label">Avoided cost</div>
+  <div class="card tipcard"><div class="label">Avoidable cost</div>
+    <div class="fig green"><span class="range">${usd(p.potential_low_usd)} - ${usd(p.potential_high_usd)}</span></div>
+    <div class="estpill">Estimated - unlock on a paid tier</div>
+    ${infoTip("What you could save on your observed spend once Circulara's optimization engines are turned on - routing, caching, compression, and the reuse library. Observe measures this for free so you can see the number before paying; a paid tier actually captures it. A published-benchmark range, not a guarantee.")}</div>
+  <div class="card tipcard"><div class="label">Cost avoided</div>
     <div class="fig green">${usd(r.avoided_usd)}</div>
-    <div class="conf">What Circulara has saved so far - Observe measures only; paid tiers turn the engines on</div></div>
-  <div class="card"><div class="label">External data spend</div>
-    <div class="fig">${usd(r.external_spend_usd)}</div>
-    <div class="conf blue">Data you bought through Circulara - shown on its own line, never counted as savings</div></div>
+    <div class="conf">Actual savings, once the engines run</div>
+    ${infoTip("The real dollars Circulara has saved by intervening on your calls. It stays $0 on the free Observe tier - Observe only measures, it never changes a call - and starts counting once you upgrade to a paid tier and the engines are enabled.")}</div>
 </div>
 <div class="grid">
   <div class="card"><div class="label">Baseline energy (estimated range)</div>
@@ -267,11 +293,12 @@ export function renderObserverMeter(
     )
     .join("");
   const body = `
-<div class="card" style="margin-bottom:24px">
-  <div class="label">Total savings (${m.events} calls observed)${m.from ? ` since ${esc(m.from)}` : ""}</div>
+<div class="card tipcard" style="margin-bottom:24px">
+  <div class="label">Detected savings (${m.events} calls observed)${m.from ? ` since ${esc(m.from)}` : ""}</div>
   <div class="fig green">${usd(m.savings.usd)}</div>
   <div class="fig" style="font-size:16px;color:var(--ink-2)">${num(Math.round(m.savings.tokens))} tokens &middot; <span class="range">${kwh(m.savings.kwh)}</span> &middot; <span class="range">${co2Range(m.savings.co2e)}</span></div>
   <div class="conf blue">the four figures come from the same avoided work; carbon ${esc(m.carbon_confidence)}</div>
+  ${infoTip("This is not your total savings - only what Observe can prove from your traffic alone: routing simple calls to a cheaper model and detectable duplicate calls. Compression, response and tool-call caching, and the reuse library add more once enabled. See the Savings potential tab for the full estimated range.")}
 </div>
 <h2 class="section">Actual vs potential (with Circulara)</h2>
 <table><thead><tr><th></th><th class="n">Actual (as run)</th><th class="n">Potential (optimized)</th><th class="n">Savings</th></tr></thead><tbody>
@@ -306,6 +333,13 @@ export function renderConnect(
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
   const settingsText = JSON.stringify(data.hookSettings, null, 2);
+  // The whole setup as ONE paste: install + connect + all keys (incl. token).
+  const oneLiner =
+    "claude mcp add circulara " +
+    Object.entries(data.env)
+      .map(([k, v]) => `--env ${k}=${v}`)
+      .join(" ") +
+    " -- npx -y -p @circulara/plugin circulara-mcp";
   const block = (id: string, tag: string, text: string) => `
 <div class="cbx">
   <div class="cbx-head"><span>${esc(tag)}</span>
@@ -331,18 +365,20 @@ details.adv[open]>summary::before{content:"- "}
 .donenote{margin-left:44px;color:var(--ink-2);font-size:14.5px}
 @media(max-width:640px){.stepnote,.cbx,details.adv,.donenote{margin-left:0}}
 </style>
-<div class="banner">You're signed in to this workspace. Copy the two pieces below into your editor - your AI usage starts metering automatically. It never blocks or changes your calls.</div>
+<div class="banner">You're signed in to this workspace. Copy the one command below, paste it in your terminal, and you're done - your keys are already baked in. Metering never blocks or changes your calls.</div>
 
-<div class="step"><span class="n">1</span><span class="t">Install the plugin</span></div>
-<p class="stepnote">Run this once in your terminal - Claude Code, Cursor, or any MCP host. Nothing to clone or build.</p>
-${block("c-install", "Terminal", data.installCommand)}
+<div class="step"><span class="n">1</span><span class="t">Add Circulara - one command</span></div>
+<p class="stepnote">Paste this into your terminal (Claude Code, Cursor, or any MCP host). It installs the plugin and connects it to your workspace in a single step - nothing else to copy.</p>
+${block("c-oneliner", "Terminal - paste once", oneLiner)}
 
-<div class="step"><span class="n">2</span><span class="t">Add your workspace keys</span></div>
-<p class="stepnote">These tell the plugin which workspace and seat you are. Paste into your project's <span class="range">.env</span> file (or pass each with <span class="range">claude mcp add --env</span>).</p>
-${block("c-env", ".env", envText)}
-
-<div class="step"><span class="n">3</span><span class="t">That's it</span></div>
+<div class="step"><span class="n">2</span><span class="t">That's it</span></div>
 <p class="donenote">Make a few AI calls, then watch them appear on your <a href="/dashboard${tenantQ}">Dashboard</a> and <a href="/dashboard/meter${tenantQ}">Meter</a>.</p>
+
+<details class="adv"><summary>Prefer to set it up by hand?</summary>
+<p class="stepnote" style="margin-left:0;margin-top:14px">Install the plugin, then add these keys to your project's <span class="range">.env</span> (or your MCP host's env).</p>
+${block("c-install", "Terminal", data.installCommand)}
+${block("c-env", ".env", envText)}
+</details>
 
 <details class="adv"><summary>Optional: auto-meter every tool call (Claude Code hooks)</summary>
 <p class="stepnote" style="margin-left:0;margin-top:14px">Add this to <span class="range">.claude/settings.json</span>. It reads the same keys as above. Observe only - it never blocks or alters your tool calls.</p>

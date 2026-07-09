@@ -85,14 +85,15 @@ function loginPage(web: WebAuthDeps, opts: { error?: string; sent?: string; bye?
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in - Circulara AI</title><style>
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url("/assets/inter-latin.woff2") format("woff2")}
 :root{--surface:#fff;--surface-2:#EEF1F5;--line:#E2E8F0;--ink:#0A2540;--ink-2:#42566B;--ink-3:#8497A9;
---blue:#009BE8;--blue-deep:#0072B5;--green-deep:#0E8E4E;--err:#B42318;--r:12px;
---font:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+--blue:#009AE4;--blue-deep:#0072B5;--green-deep:#0E8E4E;--err:#B42318;--r:12px;
+--font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--surface-2);color:var(--ink);font:16px/1.55 var(--font);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+body{background:var(--surface-2);color:var(--ink);font:16px/1.55 var(--font);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;-webkit-font-smoothing:antialiased}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px -14px rgba(10,37,64,.18);padding:32px;max-width:400px;width:100%}
-.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:22px;letter-spacing:-.01em;margin-bottom:4px}
-.brand .mark{width:28px;height:28px;border-radius:50%;background:conic-gradient(#16B364 0 33%,var(--blue) 33% 66%,#00288C 66% 100%)}
+.brand{margin-bottom:6px}
+.brand img{height:34px;width:auto;display:block}
 .sub{color:var(--ink-3);font-size:14px;margin-bottom:24px}
 label{display:block;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin-bottom:8px}
 input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r);font:16px var(--font);color:var(--ink);margin-bottom:16px}
@@ -107,7 +108,7 @@ button.btn{background:var(--blue);color:#fff}
 .foot{color:var(--ink-3);font-size:12.5px;margin-top:20px;text-align:center}
 </style></head><body>
 <div class="card">
-  <div class="brand"><span class="mark" aria-hidden="true"></span>Circulara AI</div>
+  <div class="brand"><img src="/assets/circulara_logo.svg" alt="Circulara AI"></div>
   <div class="sub">Observe (free tier) - sign in to your workspace</div>
   ${msg}
   ${googleBtn}

@@ -40,6 +40,8 @@ import { acquireAsset, type AcquireRequest, type SeatRef } from "../sourcing/acq
 import type { CommonsStore } from "../sourcing/commons.js";
 import type { FederatedIndex } from "../sourcing/catalogs.js";
 import { randomUUID } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { handleGatewayMessage, type GatewayDeps } from "../gateway/gateway.js";
 import type { ObjectStore } from "../storage/objectStore.js";
 import {
@@ -137,6 +139,35 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   app.get("/healthz", async () => ({ ok: true, service: "circulara-core" }));
+
+  // Static brand assets (logos + self-hosted Inter/Plex Mono) so the dashboard
+  // matches the marketing site. Served from ./assets (cwd-relative, like data/
+  // and registry-data), cached, filename-whitelisted (no path traversal).
+  const ASSET_TYPES: Record<string, string> = {
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".png": "image/png",
+  };
+  const assetCache = new Map<string, Buffer>();
+  app.get("/assets/:file", async (req, reply) => {
+    const file = (req.params as { file: string }).file;
+    if (!/^[a-zA-Z0-9._-]+$/.test(file) || file.includes(".."))
+      return reply.status(400).send({ error: "bad asset name" });
+    const ext = file.slice(file.lastIndexOf("."));
+    const type = ASSET_TYPES[ext];
+    if (!type) return reply.status(404).send({ error: "not found" });
+    let buf = assetCache.get(file);
+    if (!buf) {
+      const p = join(process.cwd(), "assets", file);
+      if (!existsSync(p)) return reply.status(404).send({ error: "not found" });
+      buf = readFileSync(p);
+      assetCache.set(file, buf);
+    }
+    return reply
+      .type(type)
+      .header("cache-control", "public, max-age=31536000, immutable")
+      .send(buf);
+  });
 
   // ---- control plane (admin) ----
   app.post("/v1/tenants", async (req, reply) => {
@@ -849,7 +880,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!g) return reply;
     const month = (req.query as { month?: string }).month;
     const r = await meterReport(g.ctx, month);
-    return reply.type("text/html").send(renderDashboard(r, g.mkQ(month), g.account));
+    const p = savingsPotential(r.observed_usd);
+    return reply.type("text/html").send(renderDashboard(r, p, g.mkQ(month), g.account));
   });
 
   app.get("/dashboard/meter", async (req, reply) => {
