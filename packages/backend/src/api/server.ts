@@ -245,6 +245,36 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return reply.type("text/html").send(renderOps(rows));
   });
 
+  // Operator action: set a workspace's billing plan. This is the manual-invoicing
+  // conversion switch (no Stripe at launch) - when a customer pays, the operator
+  // flips them from observe (free) to a paid tier, which unlocks the full nav +
+  // the paid waste view. Ops-token gated (same actor as /ops); money never moves
+  // here. builder.20260716.001.
+  app.post("/ops/plan", async (req, reply) => {
+    const opsToken = process.env.CIRCULARA_OPS_TOKEN;
+    if (!opsToken)
+      return reply.status(503).send({ error: "operator console not configured (set CIRCULARA_OPS_TOKEN)" });
+    const q = req.query as { key?: string };
+    const provided =
+      q.key ??
+      (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : undefined);
+    if (provided !== opsToken) return reply.status(401).send({ error: "unauthorized" });
+    const body = req.body as { tenant_id?: string; plan?: string; cycle?: string };
+    const { PLAN_PRICES, getBilling, setBilling } = await import("../billing/billing.js");
+    if (!body?.tenant_id || !body?.plan || !(body.plan in PLAN_PRICES))
+      return reply.status(400).send({ error: "tenant_id + valid plan required", plans: Object.keys(PLAN_PRICES) });
+    let ctx;
+    try {
+      ctx = await deps.control.contextFor(body.tenant_id);
+    } catch {
+      return reply.status(404).send({ error: "unknown tenant" });
+    }
+    const cur = await getBilling(ctx);
+    const cycle = body.cycle === "annual" ? "annual" : cur.cycle;
+    await setBilling(ctx, { ...cur, plan: body.plan as keyof typeof PLAN_PRICES, cycle });
+    return reply.send({ tenant_id: body.tenant_id, plan: body.plan, cycle });
+  });
+
   // ---- control plane (admin) ----
   app.post("/v1/tenants", async (req, reply) => {
     await adminOnly(req);
@@ -978,9 +1008,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       from: month ? `${month}-01` : undefined,
       dismissed,
     });
+    // paid gate: the billing tier (tenant_meta 'billing') drives the full nav +
+    // the paid waste view (annual, content-sampling toggle, routing recs).
+    const { getBilling } = await import("../billing/billing.js");
+    const paid = (await getBilling(g.ctx)).plan !== "observe";
     return reply
       .type("text/html")
-      .send(renderDashboard(r, p, g.mkQ(month), g.account, g.email, waste));
+      .send(
+        renderDashboard(r, p, g.mkQ(month), g.account, g.email, waste, {
+          paid,
+          contentSampling: policy.content_sampling.enabled,
+        }),
+      );
   });
 
   // builder.20260716.001: dismiss / restore a waste pattern (precision feedback
@@ -996,6 +1035,19 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const { dismissPattern, undismissPattern } = await import("../meter/waste.js");
     if (body.undismiss) await undismissPattern(g.ctx, body.pattern_key);
     else await dismissPattern(g.ctx, body.pattern_key, g.email ?? "admin");
+    return reply.status(204).send();
+  });
+
+  // builder.20260716.001: content-sampling toggle (paid waste view). Session-scoped
+  // (dashGuard) so a signed-in workspace admin can flip it - /v1/policy is
+  // bearer-admin only and the consumer session can't reach it. Persists the
+  // preference into policy.content_sampling; the classifier itself ships with 012.
+  app.post("/v1/waste/content-sampling", async (req, reply) => {
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const body = req.body as { enabled?: boolean };
+    const cur = await getPolicy(g.ctx);
+    await setPolicy(g.ctx, { ...cur, content_sampling: { enabled: !!body?.enabled } });
     return reply.status(204).send();
   });
 

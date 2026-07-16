@@ -155,6 +155,21 @@ td.mdl{font-family:var(--font-fig);font-size:12.5px;color:var(--ink-2)}
 .wdismiss{font:inherit;font-size:13px;font-weight:600;color:var(--ink-2);background:none;border:1px solid var(--line-strong);border-radius:8px;padding:5px 12px;cursor:pointer;white-space:nowrap}
 .wdismiss:hover{background:#F1F3F6;color:var(--ink)}
 .wdismiss:disabled{opacity:.5;cursor:default}
+.wconf.high{background:rgba(0,166,118,.18);color:var(--green-deep)}
+.wtoggle{display:flex;gap:14px;align-items:flex-start;margin-top:16px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-subtle)}
+.wtoggle-t{font-weight:600;font-size:14px;color:var(--ink)}
+.switch{position:relative;display:inline-block;width:40px;height:24px;flex:0 0 auto;margin-top:2px}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch .track{position:absolute;inset:0;background:var(--line-strong);border-radius:999px;transition:background .15s ease}
+.switch .track::before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .15s ease;box-shadow:0 1px 3px rgba(10,37,64,.3)}
+.switch input:checked + .track{background:var(--green)}
+.switch input:checked + .track::before{transform:translateX(16px)}
+.switch input:focus-visible + .track{outline:2px solid var(--focus);outline-offset:2px}
+.wrecs{margin-top:16px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-subtle)}
+.wrecs-h{font-weight:700;font-size:14px;color:var(--ink);margin-bottom:8px}
+.wrecs ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.wrecs li{font-size:14px;color:var(--ink-2)}
+.wrecs li strong{color:var(--ink)}
 footer.band{background:var(--band);color:#fff;border-radius:var(--r-lg);padding:24px;margin-top:48px;font-size:14px}
 footer.band .fig{color:#fff}
 @media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.savedstat .fig{font-size:26px}.card{padding:16px}th,td{padding:8px 10px}.brand img.logo{height:26px}nav.tabs{gap:6px}nav.tabs a{padding:7px 12px;font-size:13px}}
@@ -166,12 +181,36 @@ footer.band .fig{color:#fff}
 // on the dashboard, not a tab.
 const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 
-function page(title: string, tenantQ: string, active: string, body: string, account = ""): string {
+function page(
+  title: string,
+  tenantQ: string,
+  active: string,
+  body: string,
+  account = "",
+  paid = false,
+): string {
+  // Paid workspaces get the full nav (real links); free workspaces see the richer
+  // views LOCKED (visible so they know they exist, disabled until upgrade).
+  const paidTabs: [string, string, string][] = [
+    ["Meter", "/dashboard/meter", "meter"],
+    ["Savings potential", "/dashboard/potential", "potential"],
+    ["Monthly statement", "/dashboard/statement", "statement"],
+  ];
   const tabs =
-    `<a href="/dashboard${tenantQ}" class="${active === "dashboard" ? "active" : ""}">Observer Dashboard</a>` +
-    ["Meter", "Savings potential", "Monthly statement"]
-      .map((l) => `<span class="tab-locked" tabindex="0" title="Upgrade to unlock">${l} ${LOCK_SVG}</span>`)
-      .join("");
+    `<a href="/dashboard${tenantQ}" class="${active === "dashboard" ? "active" : ""}">${paid ? "Dashboard" : "Observer Dashboard"}</a>` +
+    (paid
+      ? paidTabs
+          .map(
+            ([l, href, key]) =>
+              `<a href="${href}${tenantQ}" class="${active === key ? "active" : ""}">${l}</a>`,
+          )
+          .join("")
+      : paidTabs
+          .map(
+            ([l]) =>
+              `<span class="tab-locked" tabindex="0" title="Upgrade to unlock">${l} ${LOCK_SVG}</span>`,
+          )
+          .join(""));
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} - Circulara AI</title>
@@ -203,24 +242,58 @@ const capWatermark = (r: MeterReport) =>
     ? `<div class="watermark">Generated over the free-tier seat limit</div>`
     : "";
 
-// builder.20260716.001 - Model waste panel (advisory, admin-only). Surfaces
-// wasteful behaviour visible from metadata alone: a top-tier model doing a trivial
-// task a cheaper model would match. Never blocks; dollars are an ESTIMATE of
-// avoidable spend, not realized savings. Dismiss = precision feedback loop.
-function wastePanel(w: WasteReport): string {
+// builder.20260716.001 - Model waste panel. Surfaces wasteful behaviour visible
+// from metadata alone: a top-tier model doing a trivial task a cheaper model would
+// match. Never blocks; dollars are an ESTIMATE of avoidable spend, not realized
+// savings. Dismiss = precision feedback loop.
+// PAID extras (opts.paid): projected annual, a content-sampling toggle (staged -
+// the classifier + enforcement ship with auto-routing, task 012), and a read-only
+// "recommended routing rules" list. Nothing here fabricates confidence or a live
+// enforce action - both are honestly labelled as rolling out.
+function wastePanel(
+  w: WasteReport,
+  opts: { paid?: boolean; contentSampling?: boolean } = {},
+): string {
   if (!w.enabled) return "";
+  const { paid = false, contentSampling = false } = opts;
+  const pill = paid
+    ? `<span class="pillmuted">full report</span>`
+    : `<span class="pillmuted">advisory</span>`;
   const intro = `<p class="note" style="margin-top:0">Wasteful model usage we can spot from metadata alone - a premium model doing a trivial task a cheaper same-provider model would match. Advisory only: nothing is blocked or rerouted. Dollar figures are an estimate of avoidable spend, not realized savings.</p>`;
-  const samplingHint = `<p class="note">Want higher-confidence flags? Opt-in content sampling runs a lightweight size/complexity check on your OWN provider keys - no prompt ever leaves your account. Off by default; enable it in workspace policy.</p>`;
+  // Content sampling: a real toggle on paid (persists the preference); an upsell
+  // hint on free. Honest either way - the classifier rolls out with task 012.
+  const samplingBlock = paid
+    ? `<div class="wtoggle">
+  <label class="switch"><input type="checkbox" id="csToggle" ${contentSampling ? "checked" : ""}><span class="track"></span></label>
+  <div><div class="wtoggle-t">Content sampling <span class="pillmuted">your keys</span></div>
+  <div class="note" style="margin-top:2px">Confirms a task was truly trivial with a lightweight check that runs on your OWN provider keys - no prompt ever leaves your account. Rolling out with auto-routing; toggling now stages your preference and confidence lifts above "medium" when it activates.</div></div>
+</div>`
+    : `<p class="note">Want higher-confidence flags? Opt-in content sampling runs a lightweight size/complexity check on your OWN provider keys - no prompt ever leaves your account. Off by default; available on paid tiers.</p>`;
+  const samplingScript = paid
+    ? `<script>
+(function(){var t=document.getElementById('csToggle');if(!t)return;t.addEventListener('change',function(){
+  t.disabled=true;
+  fetch('/v1/waste/content-sampling',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:t.checked})})
+    .then(function(r){if(!r.ok)throw 0;t.disabled=false;})
+    .catch(function(){t.checked=!t.checked;t.disabled=false;});
+});})();
+</script>`
+    : "";
+
   const live = w.patterns.filter((x) => !x.dismissed);
   if (live.length === 0) {
-    return `<h2 class="section">Model waste <span class="pillmuted">advisory</span></h2>
+    return `<h2 class="section">Model waste ${pill}</h2>
 <div class="card">${intro}
 <p style="margin:8px 0 0;color:var(--ink-2)">No wasteful model usage detected - your fleet is right-sizing its models. We'll flag it here if that changes.</p>
-${samplingHint}</div>`;
+${samplingBlock}</div>${samplingScript}`;
   }
+
+  const annual = paid && w.projected_monthly_usd > 0
+    ? ` <span class="perm">&middot; ~${usd(w.projected_monthly_usd * 12)}/yr</span>`
+    : "";
   const headline =
     w.projected_monthly_usd > 0
-      ? `~${usd(w.projected_monthly_usd)}<span class="perm">/mo</span>`
+      ? `~${usd(w.projected_monthly_usd)}<span class="perm">/mo</span>${annual}`
       : `${usd(w.observed_saving_usd)}<span class="perm"> observed</span>`;
   const rows = live
     .map(
@@ -242,7 +315,32 @@ ${samplingHint}</div>`;
       ? ` ${dismissedCount} pattern${dismissedCount === 1 ? "" : "s"} dismissed; flag precision ${w.precision != null ? pct(w.precision) : "n/a"}.`
       : ""
   }</p>`;
-  return `<h2 class="section">Model waste <span class="pillmuted">advisory</span></h2>
+
+  // Paid: read-only routing recommendations from the recurring patterns. Honest -
+  // labelled as ready to enforce when auto-routing turns on (not live today).
+  const recs = paid
+    ? (() => {
+        const seen = new Set<string>();
+        const items = live
+          .filter((x) => x.recurring)
+          .map((x) => {
+            const k = `${x.model}>${x.counterfactual_model}>${x.task_type}`;
+            if (seen.has(k)) return "";
+            seen.add(k);
+            return `<li><span class="mdl">${esc(x.model)} <span class="warrow">&rarr;</span> ${esc(x.counterfactual_model)}</span> for <strong>${esc(x.task_type)}</strong> <span class="note" style="display:inline">(${num(x.occurrences)} calls / ${num(x.active_days)}d)</span></li>`;
+          })
+          .filter(Boolean)
+          .join("");
+        if (!items) return "";
+        return `<div class="wrecs">
+  <div class="wrecs-h">Recommended routing rules</div>
+  <ul>${items}</ul>
+  <p class="note" style="margin:8px 0 0">Ready to enforce when auto-routing turns on. Until then this report is advisory - no call is rerouted.</p>
+</div>`;
+      })()
+    : "";
+
+  return `<h2 class="section">Model waste ${pill}</h2>
 <div class="card">
   ${intro}
   <div class="savedstat" style="margin:4px 0 16px"><div class="fig green">${headline}</div><div class="subtext">Estimated avoidable spend from right-sizing these calls</div></div>
@@ -250,7 +348,8 @@ ${samplingHint}</div>`;
   <thead><tr><th>User</th><th>Task type</th><th>Model &rarr; cheaper</th><th class="n">Calls</th><th class="n">Days</th><th class="n">Est. $/mo</th><th>Confidence</th><th></th></tr></thead>
   <tbody>${rows}</tbody></table></div>
   ${footer}
-  ${samplingHint}
+  ${recs}
+  ${samplingBlock}
 </div>
 <script>
 document.addEventListener('click',function(e){
@@ -261,7 +360,7 @@ document.addEventListener('click',function(e){
     .then(function(r){if(!r.ok)throw 0;location.reload();})
     .catch(function(){b.disabled=false;b.textContent='Dismiss';});
 });
-</script>`;
+</script>${samplingScript}`;
 }
 
 export function renderDashboard(
@@ -271,7 +370,9 @@ export function renderDashboard(
   account = "",
   email = "",
   waste?: WasteReport,
+  opts: { paid?: boolean; contentSampling?: boolean } = {},
 ): string {
+  const paid = opts.paid ?? false;
   // Observe breakdowns: by model / provider / month (no by-user/team - Observe
   // has no team structure). Avoided is always $0 on free Observe, so it is omitted.
   const bd = (title: string, col: string, rows: MeterReport["by_user"]) => `
@@ -295,8 +396,8 @@ ${rows.length
   const body = `
 <div class="obs-head">
   <div>
-    <h1 class="obs-title">Observer Dashboard</h1>
-    <p class="obs-sub">Your live AI savings meter - free forever. Connect the plugin and watch it fill in.</p>
+    <h1 class="obs-title">${paid ? "Dashboard" : "Observer Dashboard"}</h1>
+    <p class="obs-sub">${paid ? "Your live AI savings meter and waste report." : "Your live AI savings meter - free forever. Connect the plugin and watch it fill in."}</p>
   </div>
   <div class="obs-actions">
     <a class="btn connect" href="/dashboard/connect${tenantQ}">Connect free plugin</a>
@@ -326,11 +427,11 @@ ${capBanner(r)}
     <div class="conf">Estimated</div>
     ${infoTip("Estimated CO2e you could avoid on a paid tier, from the same optimizations applied to your observed footprint. Carbon is always an estimate (grid + datacenter assumptions disclosed), never a single guaranteed number.")}</div>
 </div>
-<div class="upsell">
+${paid ? "" : `<div class="upsell">
   <div class="upsell-text">Upgrade to paid tier and start saving with Circulara AI</div>
   <button class="btn primary" type="button" onclick="ciraUpgrade()">Upgrade</button>
-</div>
-${waste ? wastePanel(waste) : ""}
+</div>`}
+${waste ? wastePanel(waste, { paid, contentSampling: opts.contentSampling }) : ""}
 ${bd("By model", "Model", r.by_model)}
 ${bd("By provider", "Provider", r.by_provider)}
 ${bd("By month", "Month", r.by_month)}
@@ -402,7 +503,7 @@ function ciraSubmitContact(e){
 })();
 </script>
 `;
-  return page("Observer Dashboard", tenantQ, "dashboard", body, account);
+  return page(paid ? "Dashboard" : "Observer Dashboard", tenantQ, "dashboard", body, account, paid);
 }
 
 export function renderPotential(
