@@ -167,6 +167,20 @@ CREATE TRIGGER meter_events_immutable
   FOR EACH ROW EXECUTE FUNCTION reject_mutation();
 `,
   },
+  {
+    // builder.20260716.001: waste-detector precision feedback loop. An admin can
+    // dismiss a waste pattern (false positive / accepted-as-intended); the
+    // dismissal persists so the pattern is filtered and precision = 1 -
+    // dismissed/total. pattern_key = seat|task_type|size_bucket (see meter/waste.ts).
+    version: 2,
+    sql: `
+CREATE TABLE IF NOT EXISTS waste_dismissals (
+  pattern_key  text PRIMARY KEY,
+  dismissed_by text NOT NULL,           -- admin email/user that dismissed it
+  ts           timestamptz NOT NULL DEFAULT now()
+);
+`,
+  },
 ];
 
 export const CONTROL_MIGRATIONS: { version: number; sql: string }[] = [

@@ -78,6 +78,11 @@ export const interventionEventSchema = z
         routable: z.boolean().default(false),
         // the cheaper same-provider model this call could route to (if routable)
         route_to_model: z.string().nullable().default(null),
+        // builder.20260716.001 - COUNT of tool calls this request made (a number,
+        // never tool args/results). Lets the overkill detector exempt agentic
+        // calls (tools imply the big model earns its cost). null = client didn't
+        // report it (older plugins); treated as "no tool signal", not "zero tools".
+        tool_calls: z.number().int().nonnegative().nullable().default(null),
       })
       .strict()
       .nullable()

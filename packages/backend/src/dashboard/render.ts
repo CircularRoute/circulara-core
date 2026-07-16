@@ -12,9 +12,11 @@
  */
 import type { MeterReport } from "../meter/report.js";
 import type { SavingsPotential } from "../meter/potential.js";
+import type { WasteReport } from "../meter/waste.js";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
 
 const usd = (n: number) =>
   n >= 100
@@ -143,6 +145,16 @@ tr:last-child td{border-bottom:none}
 .note{color:var(--ink-2);font-size:14px;margin-top:12px;max-width:720px}
 .watermark{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:8px 16px;color:var(--ink-3);font-size:12.5px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:16px}
 .range{font-family:var(--font-fig);font-variant-numeric:tabular-nums}
+.pillmuted{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line-strong);border-radius:999px;padding:2px 9px;vertical-align:middle;margin-left:8px}
+.perm{font-size:15px;font-weight:600;color:var(--ink-2)}
+td.mdl{font-family:var(--font-fig);font-size:12.5px;color:var(--ink-2)}
+.warrow{color:var(--green);font-weight:700}
+.wconf{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:capitalize;border-radius:999px;padding:2px 9px}
+.wconf.low{background:#F1F3F6;color:var(--ink-2)}
+.wconf.medium{background:rgba(0,166,118,.12);color:var(--green)}
+.wdismiss{font:inherit;font-size:13px;font-weight:600;color:var(--ink-2);background:none;border:1px solid var(--line-strong);border-radius:8px;padding:5px 12px;cursor:pointer;white-space:nowrap}
+.wdismiss:hover{background:#F1F3F6;color:var(--ink)}
+.wdismiss:disabled{opacity:.5;cursor:default}
 footer.band{background:var(--band);color:#fff;border-radius:var(--r-lg);padding:24px;margin-top:48px;font-size:14px}
 footer.band .fig{color:#fff}
 @media (max-width:640px){.wrap{padding:16px 12px 64px}.fig{font-size:24px}.savedstat .fig{font-size:26px}.card{padding:16px}th,td{padding:8px 10px}.brand img.logo{height:26px}nav.tabs{gap:6px}nav.tabs a{padding:7px 12px;font-size:13px}}
@@ -191,12 +203,74 @@ const capWatermark = (r: MeterReport) =>
     ? `<div class="watermark">Generated over the free-tier seat limit</div>`
     : "";
 
+// builder.20260716.001 - Model waste panel (advisory, admin-only). Surfaces
+// wasteful behaviour visible from metadata alone: a top-tier model doing a trivial
+// task a cheaper model would match. Never blocks; dollars are an ESTIMATE of
+// avoidable spend, not realized savings. Dismiss = precision feedback loop.
+function wastePanel(w: WasteReport): string {
+  if (!w.enabled) return "";
+  const intro = `<p class="note" style="margin-top:0">Wasteful model usage we can spot from metadata alone - a premium model doing a trivial task a cheaper same-provider model would match. Advisory only: nothing is blocked or rerouted. Dollar figures are an estimate of avoidable spend, not realized savings.</p>`;
+  const samplingHint = `<p class="note">Want higher-confidence flags? Opt-in content sampling runs a lightweight size/complexity check on your OWN provider keys - no prompt ever leaves your account. Off by default; enable it in workspace policy.</p>`;
+  const live = w.patterns.filter((x) => !x.dismissed);
+  if (live.length === 0) {
+    return `<h2 class="section">Model waste <span class="pillmuted">advisory</span></h2>
+<div class="card">${intro}
+<p style="margin:8px 0 0;color:var(--ink-2)">No wasteful model usage detected - your fleet is right-sizing its models. We'll flag it here if that changes.</p>
+${samplingHint}</div>`;
+  }
+  const headline =
+    w.projected_monthly_usd > 0
+      ? `~${usd(w.projected_monthly_usd)}<span class="perm">/mo</span>`
+      : `${usd(w.observed_saving_usd)}<span class="perm"> observed</span>`;
+  const rows = live
+    .map(
+      (x) => `<tr>
+<td>${esc(x.user_id)}</td>
+<td>${esc(x.task_type)}</td>
+<td class="mdl">${esc(x.model)} <span class="warrow">&rarr;</span> ${esc(x.counterfactual_model)}</td>
+<td class="n">${num(x.occurrences)}</td>
+<td class="n">${num(x.active_days)}</td>
+<td class="n">${x.projected_monthly_usd != null ? usd(x.projected_monthly_usd) : usd(x.observed_saving_usd)}</td>
+<td><span class="wconf ${x.confidence}">${x.confidence}</span></td>
+<td><button class="wdismiss" data-wk="${escAttr(x.pattern_key)}" title="Dismiss this pattern (accepted as intended)">Dismiss</button></td>
+</tr>`,
+    )
+    .join("");
+  const dismissedCount = w.patterns.length - live.length;
+  const footer = `<p class="note">Estimated avoidable spend if these patterns kept running at the observed rate. Metadata heuristic - confidence caps at "medium" until content sampling is enabled.${
+    dismissedCount > 0
+      ? ` ${dismissedCount} pattern${dismissedCount === 1 ? "" : "s"} dismissed; flag precision ${w.precision != null ? pct(w.precision) : "n/a"}.`
+      : ""
+  }</p>`;
+  return `<h2 class="section">Model waste <span class="pillmuted">advisory</span></h2>
+<div class="card">
+  ${intro}
+  <div class="savedstat" style="margin:4px 0 16px"><div class="fig green">${headline}</div><div class="subtext">Estimated avoidable spend from right-sizing these calls</div></div>
+  <div class="tablewrap"><table>
+  <thead><tr><th>User</th><th>Task type</th><th>Model &rarr; cheaper</th><th class="n">Calls</th><th class="n">Days</th><th class="n">Est. $/mo</th><th>Confidence</th><th></th></tr></thead>
+  <tbody>${rows}</tbody></table></div>
+  ${footer}
+  ${samplingHint}
+</div>
+<script>
+document.addEventListener('click',function(e){
+  var b=e.target&&e.target.closest?e.target.closest('.wdismiss'):null;
+  if(!b)return;
+  b.disabled=true;b.textContent='...';
+  fetch('/v1/waste/dismiss',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pattern_key:b.getAttribute('data-wk')})})
+    .then(function(r){if(!r.ok)throw 0;location.reload();})
+    .catch(function(){b.disabled=false;b.textContent='Dismiss';});
+});
+</script>`;
+}
+
 export function renderDashboard(
   r: MeterReport,
   p: SavingsPotential,
   tenantQ: string,
   account = "",
   email = "",
+  waste?: WasteReport,
 ): string {
   // Observe breakdowns: by model / provider / month (no by-user/team - Observe
   // has no team structure). Avoided is always $0 on free Observe, so it is omitted.
@@ -256,6 +330,7 @@ ${capBanner(r)}
   <div class="upsell-text">Upgrade to paid tier and start saving with Circulara AI</div>
   <button class="btn primary" type="button" onclick="ciraUpgrade()">Upgrade</button>
 </div>
+${waste ? wastePanel(waste) : ""}
 ${bd("By model", "Model", r.by_model)}
 ${bd("By provider", "Provider", r.by_provider)}
 ${bd("By month", "Month", r.by_month)}

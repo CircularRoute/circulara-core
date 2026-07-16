@@ -69,6 +69,78 @@ export function normalizeUpstream(
   return { source: UPSTREAM_URL, fetched_at: fetchedAt, models };
 }
 
+/** Simple blended per-token price used for tier comparisons (input + output). */
+export function blendedPrice(m: ModelPrice): number {
+  return m.input_cost_per_token + m.output_cost_per_token;
+}
+
+/**
+ * Resolve a possibly-bare model id to its canonical snapshot key, mirroring
+ * priceTokens' fallback (bare -> anthropic/<id> -> openai/<id>). Returns null when
+ * the model is unknown. Lets tier/counterfactual checks compare like-for-like.
+ */
+export function resolveModelKey(
+  snapshot: PricingSnapshot,
+  model: string | null,
+): string | null {
+  if (!model) return null;
+  if (snapshot.models[model]) return model;
+  if (snapshot.models[`anthropic/${model}`]) return `anthropic/${model}`;
+  if (snapshot.models[`openai/${model}`]) return `openai/${model}`;
+  return null;
+}
+
+/**
+ * builder.20260716.001 - "top price tier" derivation. The snapshot has no tier
+ * field, so we derive it PER PROVIDER: a model is top-tier when its blended price
+ * is >= `ratio` x the cheapest priced model of the SAME provider. Conservative by
+ * design (ratio default 4) so only genuinely expensive models flag as waste.
+ * Free (zero-priced) models are never top-tier and never a cheapest baseline.
+ */
+export function topTierModels(
+  snapshot: PricingSnapshot,
+  ratio = 4,
+): Set<string> {
+  const cheapestByProvider = new Map<string, number>();
+  for (const m of Object.values(snapshot.models)) {
+    const p = blendedPrice(m);
+    if (p <= 0) continue;
+    const cur = cheapestByProvider.get(m.provider);
+    if (cur === undefined || p < cur) cheapestByProvider.set(m.provider, p);
+  }
+  const top = new Set<string>();
+  for (const [id, m] of Object.entries(snapshot.models)) {
+    const p = blendedPrice(m);
+    if (p <= 0) continue;
+    const floor = cheapestByProvider.get(m.provider);
+    if (floor !== undefined && floor > 0 && p >= floor * ratio) top.add(id);
+  }
+  return top;
+}
+
+/**
+ * builder.20260716.001 - counterfactual target: the cheapest priced model from the
+ * SAME provider as `modelId` (the wasteful call could have used this instead, no
+ * cross-provider key assumption). Returns null if the model/provider is unknown or
+ * the model itself is already the cheapest priced one for its provider.
+ */
+export function cheapestSameProvider(
+  snapshot: PricingSnapshot,
+  modelId: string,
+): { id: string; price: ModelPrice } | null {
+  const self = snapshot.models[modelId];
+  if (!self) return null;
+  let best: { id: string; price: ModelPrice } | null = null;
+  for (const [id, m] of Object.entries(snapshot.models)) {
+    if (m.provider !== self.provider) continue;
+    const p = blendedPrice(m);
+    if (p <= 0) continue;
+    if (best === null || p < blendedPrice(best.price)) best = { id, price: m };
+  }
+  if (!best || best.id === modelId) return null;
+  return best;
+}
+
 export function diffSnapshots(
   current: PricingSnapshot | null,
   candidate: Omit<PricingSnapshot, "pricing_version">,

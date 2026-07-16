@@ -55,6 +55,7 @@ export interface Capture {
     cache_read_tokens: number;
     routable: boolean;
     route_to_model: string | null;
+    tool_calls?: number | null; // builder.20260716.001 - tool-call COUNT (metadata)
   } | null;
 }
 
@@ -115,7 +116,9 @@ export async function recordCapture(
     cache_ref: null,
     sourcing: null,
     catalog_reserved: null,
-    observer: cap.observer ?? null,
+    observer: cap.observer
+      ? { ...cap.observer, tool_calls: cap.observer.tool_calls ?? null }
+      : null,
   };
   return appendNormalized(ctx, deps, ev);
 }

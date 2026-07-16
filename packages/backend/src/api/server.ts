@@ -359,6 +359,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       },
       reuse: { ...current.reuse, ...(body.reuse ?? {}) },
       clearance: { ...current.clearance, ...(body.clearance ?? {}) },
+      waste: { ...current.waste, ...(body.waste ?? {}) },
+      content_sampling: { ...current.content_sampling, ...(body.content_sampling ?? {}) },
     };
     await setPolicy(ctx, merged);
     return reply.status(204).send();
@@ -966,7 +968,35 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       routingUsd: om.savings_source.routing_usd,
       dedupeUsd: om.savings_source.dedupe_usd,
     });
-    return reply.type("text/html").send(renderDashboard(r, p, g.mkQ(month), g.account, g.email));
+    // Model-waste advisory (builder.20260716.001): metadata-only, admin-only,
+    // never affects realized savings. The signed-in user is admin of their own
+    // workspace, so it always renders on the free Observer dashboard.
+    const { wasteReport, loadDismissed } = await import("../meter/waste.js");
+    const policy = await getPolicy(g.ctx);
+    const dismissed = await loadDismissed(g.ctx);
+    const waste = await wasteReport(g.ctx, deps.gateway.getPricing(), policy, {
+      from: month ? `${month}-01` : undefined,
+      dismissed,
+    });
+    return reply
+      .type("text/html")
+      .send(renderDashboard(r, p, g.mkQ(month), g.account, g.email, waste));
+  });
+
+  // builder.20260716.001: dismiss / restore a waste pattern (precision feedback
+  // loop). Admin-scoped via dashGuard (own-workspace admin on free Observe).
+  app.post("/v1/waste/dismiss", async (req, reply) => {
+    const g = await dashGuard(req, reply);
+    if (!g) return reply;
+    const body = req.body as { pattern_key?: string; undismiss?: boolean };
+    if (!body?.pattern_key) {
+      reply.status(400).send({ error: "pattern_key required" });
+      return reply;
+    }
+    const { dismissPattern, undismissPattern } = await import("../meter/waste.js");
+    if (body.undismiss) await undismissPattern(g.ctx, body.pattern_key);
+    else await dismissPattern(g.ctx, body.pattern_key, g.email ?? "admin");
+    return reply.status(204).send();
   });
 
   app.get("/dashboard/meter", async (req, reply) => {

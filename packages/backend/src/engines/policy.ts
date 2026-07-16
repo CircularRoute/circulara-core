@@ -55,6 +55,24 @@ export interface TenantPolicy {
     // measured savings (BL2-unforgeable) are unaffected.
     max_monthly_estimated_avoided_usd: number;
   };
+  // builder.20260716.001 - model-WASTE detector (Observe/free tier). Flags wasteful
+  // behaviour: using a top-tier model for a trivial task a cheap model would match.
+  // METADATA-ONLY (counts-not-content HOLDS: reads token counts + model + seat + tool
+  // metadata, never prompts). Advisory ONLY: never blocks a call; feeds the report +
+  // Routing Readiness evidence.
+  waste: {
+    enabled: boolean; // heuristic detector on/off (default ON: advisory, zero cost)
+    max_input_tokens: number; // "tiny input" ceiling (<= is a candidate signal)
+    max_output_tokens: number; // "tiny output" ceiling
+    price_ratio: number; // model is "top tier" if its blended price >= ratio x cheapest same-provider
+    require_zero_tools: boolean; // agentic (tool-using) calls are exempt by default
+  };
+  // builder.20260716.001 - OPT-IN content sampling. Toggle only (no classifier yet -
+  // that ships with builder.20260707.012). When ON, runs on the customer's OWN keys;
+  // no prompt content ever leaves their account. Default OFF, admin-only.
+  content_sampling: {
+    enabled: boolean;
+  };
 }
 
 export const DEFAULT_POLICY: TenantPolicy = {
@@ -100,6 +118,16 @@ export const DEFAULT_POLICY: TenantPolicy = {
     semantic_threshold: 0.95,
     max_monthly_estimated_avoided_usd: 50_000,
   },
+  waste: {
+    enabled: true, // advisory + zero cost: on by default so Observer surfaces the pattern
+    max_input_tokens: 200, // "tiny input" (§design canon 2026-07-16)
+    max_output_tokens: 300, // "tiny output"
+    price_ratio: 4, // top-tier = >= 4x the cheapest same-provider priced model
+    require_zero_tools: true, // agentic calls are exempt (tools imply the big model earns its cost)
+  },
+  content_sampling: {
+    enabled: false, // OPT-IN, admin-only, runs on the customer's own keys
+  },
 };
 
 export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
@@ -127,6 +155,11 @@ export async function getPolicy(ctx: TenantContext): Promise<TenantPolicy> {
   };
   merged.reuse = { ...DEFAULT_POLICY.reuse, ...(stored.reuse ?? {}) };
   merged.clearance = { ...DEFAULT_POLICY.clearance, ...(stored.clearance ?? {}) };
+  merged.waste = { ...DEFAULT_POLICY.waste, ...(stored.waste ?? {}) };
+  merged.content_sampling = {
+    ...DEFAULT_POLICY.content_sampling,
+    ...(stored.content_sampling ?? {}),
+  };
   // hard floor (§6.8): semantic threshold can never be configured below 0.92
   if (merged.recycle.response.semantic_threshold < 0.92)
     merged.recycle.response.semantic_threshold = 0.92;

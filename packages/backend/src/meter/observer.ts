@@ -55,8 +55,10 @@ export interface ObserverMeter {
   carbon_confidence: "Estimated";
 }
 
-interface Row {
+export interface Row {
   user_id: string;
+  seat_id: string;
+  identity_type: "human" | "named_agent";
   task_type: string;
   model: string | null;
   in_tok: number;
@@ -65,6 +67,7 @@ interface Row {
   routable: boolean;
   route_to: string | null;
   request_fp: string | null;
+  tool_calls: number | null; // COUNT of tool calls (metadata); null = not reported
   ts: string;
 }
 
@@ -123,7 +126,7 @@ function quadFor(pricing: PricingSnapshot | null, model: string | null, inTok: n
   return { usd: callUsd(pricing, model, inTok, outTok, cacheRead), tokens: inTok + outTok, kwh, co2e: kwhToCo2e(kwh) };
 }
 
-async function loadRows(ctx: TenantContext, from?: string, to?: string): Promise<Row[]> {
+export async function loadRows(ctx: TenantContext, from?: string, to?: string): Promise<Row[]> {
   const clauses: string[] = [];
   const params: string[] = [];
   if (from) { params.push(from); clauses.push(`ts >= $${params.length}`); }
@@ -140,8 +143,11 @@ async function loadRows(ctx: TenantContext, from?: string, to?: string): Promise
     const p = x.payload;
     const tokens = (p.tokens ?? {}) as Record<string, number>;
     const obs = (p.observer ?? {}) as Record<string, unknown>;
+    const toolCalls = obs.tool_calls;
     return {
       user_id: String(p.user_id ?? "unknown"),
+      seat_id: String(p.seat_id ?? "unknown"),
+      identity_type: p.identity_type === "named_agent" ? "named_agent" : "human",
       task_type: String((obs.task_type as string) ?? "untyped"),
       model: (p.model_used as string) ?? (p.model_requested as string) ?? null,
       in_tok: Number(tokens.input_actual ?? 0),
@@ -150,6 +156,7 @@ async function loadRows(ctx: TenantContext, from?: string, to?: string): Promise
       routable: obs.routable === true,
       route_to: (obs.route_to_model as string) ?? null,
       request_fp: (obs.request_fp as string) ?? null,
+      tool_calls: typeof toolCalls === "number" ? toolCalls : null,
       ts: x.ts,
     };
   });
