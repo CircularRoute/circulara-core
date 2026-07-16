@@ -260,6 +260,9 @@ function wastePanel(
     ? `<span class="pillmuted">full report</span>`
     : `<span class="pillmuted">advisory</span>`;
   const intro = `<p class="note" style="margin-top:0">Wasteful model usage we can spot from metadata alone - a premium model doing a trivial task a cheaper same-provider model would match. Advisory only: nothing is blocked or rerouted. Dollar figures are an estimate of avoidable spend, not realized savings.</p>`;
+  // Empty state uses a trimmed intro: the advisory/estimate caveats only matter
+  // once there are actual dollar figures on screen.
+  const emptyIntro = `<p class="note" style="margin-top:0">Wasteful model usage we can spot from metadata alone - a premium model doing a trivial task a cheaper same-provider model would match.</p>`;
   // Content sampling: a real toggle on paid (persists the preference); an upsell
   // hint on free. Honest either way - the classifier rolls out with task 012.
   const samplingBlock = paid
@@ -282,10 +285,12 @@ function wastePanel(
 
   const live = w.patterns.filter((x) => !x.dismissed);
   if (live.length === 0) {
+    // Free empty state: no advisory caveats, no sampling upsell (there's nothing
+    // to caveat). Paid keeps the sampling toggle - it's a real control, not a hint.
     return `<h2 class="section">Model waste ${pill}</h2>
-<div class="card">${intro}
+<div class="card">${emptyIntro}
 <p style="margin:8px 0 0;color:var(--ink-2)">No wasteful model usage detected - your fleet is right-sizing its models. We'll flag it here if that changes.</p>
-${samplingBlock}</div>${samplingScript}`;
+${paid ? samplingBlock : ""}</div>${paid ? samplingScript : ""}`;
   }
 
   const annual = paid && w.projected_monthly_usd > 0

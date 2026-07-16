@@ -108,3 +108,10 @@ test("paid empty state still offers the sampling toggle, no table", () => {
   assert.ok(html.includes("No wasteful model usage detected"));
   assert.ok(html.includes("csToggle"), "toggle available even with no patterns");
 });
+
+test("free empty state drops the advisory caveats + sampling upsell", () => {
+  const html = renderDashboard(REPORT, POT, "", "", "", EMPTY_WASTE, { paid: false });
+  assert.ok(html.includes("No wasteful model usage detected"));
+  assert.ok(!html.includes("Advisory only: nothing is blocked"), "no advisory caveat when empty");
+  assert.ok(!html.includes("Want higher-confidence flags"), "no sampling upsell when empty");
+});
